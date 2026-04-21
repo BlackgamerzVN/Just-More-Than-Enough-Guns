@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg;
 
+import com.blackgamerz.jmteg.compat.CompatInitializer;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.Registries;

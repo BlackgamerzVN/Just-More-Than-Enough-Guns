@@ -11,15 +11,15 @@ import org.apache.logging.log4j.Logger;
  * Important: Do NOT reference JEG types directly in the top-level class fields or signatures.
  * All reflective access occurs inside methods called only when ModList reports the mod present.
  */
-public final class JegCompat {
+public final class JegDetection {
     private static final Logger LOGGER = LogManager.getLogger("JMTJEG-JEG-Compat");
 
-    private JegCompat() {}
+    private JegDetection() {}
 
     public static void init() {
         LOGGER.info("Initializing JEG compatibility...");
         // Example: register event handlers that will call into JEG reflectively when needed.
-        MinecraftForge.EVENT_BUS.register(new JegCompat());
+        MinecraftForge.EVENT_BUS.register(new JegDetection());
         // Optionally, verify reflective classes are present
         try {
             Class.forName("ttv.migami.jeg.Reference");
@@ -50,5 +50,38 @@ public final class JegCompat {
         return false;
     }
 
+    // inside public final class JegCompat { ... }
+
+    /**
+     * Try to tell JEG to treat the given entity as a gun-using mob. Returns true if
+     * an API call succeeded. Uses reflection and tries a few plausible API shapes.
+     */
+    public static boolean tryEnableEntityToUseGuns(net.minecraft.world.entity.Entity entity) {
+        try {
+            // Try a plausible API class: ttv.migami.jeg.api.JegAPI.enableEntityForGuns(Entity)
+            try {
+                Class<?> api = Class.forName("ttv.migami.jeg.api.JegAPI");
+                java.lang.reflect.Method m = api.getMethod("enableEntityForGuns", net.minecraft.world.entity.Entity.class);
+                m.invoke(null, entity);
+                LOGGER.info("Called ttv.migami.jeg.api.JegAPI.enableEntityForGuns");
+                return true;
+            } catch (ClassNotFoundException | NoSuchMethodException ignored) {}
+
+            // Try older or alternate shapes: ttv.migami.jeg.JustEnoughGuns.registerEntityAsGunUser(Entity)
+            try {
+                Class<?> main = Class.forName("ttv.migami.jeg.JustEnoughGuns");
+                java.lang.reflect.Method reg = main.getMethod("registerEntityAsGunUser", net.minecraft.world.entity.Entity.class);
+                reg.invoke(null, entity);
+                LOGGER.info("Called ttv.migami.jeg.JustEnoughGuns.registerEntityAsGunUser");
+                return true;
+            } catch (ClassNotFoundException | NoSuchMethodException ignored) {}
+
+            // Try to set a recruitsLoaded flag as an extra compatibility hint (existing helper)
+            trySetRecruitsLoadedFlag(true);
+        } catch (Throwable t) {
+            LOGGER.error("Error trying to enable entity for JEG via reflection", t);
+        }
+        return false;
+    }
     // Add more reflection helpers here for the exact JEG integration points you need (gun registration, network hooks, etc.)
 }

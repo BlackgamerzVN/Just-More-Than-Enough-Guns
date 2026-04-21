@@ -1,8 +1,6 @@
 package com.blackgamerz.jmteg.compat;
 
 import net.minecraftforge.fml.ModList;
-import net.minecraftforge.fml.LogicalSide;
-import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -23,7 +21,7 @@ public final class CompatInitializer {
 
         if (jeg) {
             try {
-                JegCompat.init();
+                JegDetection.init();
                 LOGGER.info("JegCompat initialized");
             } catch (Throwable t) {
                 LOGGER.error("Failed to initialize JegCompat", t);
@@ -32,7 +30,7 @@ public final class CompatInitializer {
 
         if (recruits) {
             try {
-                RecruitsCompat.init();
+                RecruitsDetection.init();
                 LOGGER.info("RecruitsCompat initialized");
             } catch (Throwable t) {
                 LOGGER.error("Failed to initialize RecruitsCompat", t);
