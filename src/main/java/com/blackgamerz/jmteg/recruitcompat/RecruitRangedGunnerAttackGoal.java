@@ -17,12 +17,11 @@ import org.apache.logging.log4j.Logger;
 import java.util.EnumSet;
 
 /**
- * Deterministic fallback ranged goal that enforces internal ammo stored in ItemStack NBT
- * and consumes real ammo from mob inventory at reload time.
+ * Deterministic fallback goal. Authoritative internal ammo stored in jmteg_internal_ammo NBT,
+ * consumes real ammo from inventory at reload time via JustEnoughGunsCompat.consumeAmmoFromInventory.
  */
 public class RecruitRangedGunnerAttackGoal extends Goal {
     private static final Logger LOGGER = LogManager.getLogger("JMT-RecruitGunnerGoal");
-
     private final PathfinderMob mob;
     private LivingEntity target;
     private int seeTime;
@@ -31,10 +30,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private static final String INTERNAL_AMMO_KEY = "jmteg_internal_ammo";
     private static final int DEFAULT_INTERNAL_AMMO = 6;
-    private static final int RELOAD_TICKS = 40; // tune as needed
+    private static final int RELOAD_TICKS = 40; // tune
     private static final int AIM_TICKS = 10;
-    private static final double ARROW_SPEED = 1.6F;
-    private static final float ARROW_INACCURACY = 14.0F;
 
     public RecruitRangedGunnerAttackGoal(PathfinderMob mob) {
         this.mob = mob;
@@ -49,25 +46,13 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     }
 
     @Override
-    public boolean canContinueToUse() {
-        return canUse();
-    }
+    public boolean canContinueToUse() { return canUse(); }
 
     @Override
-    public void start() {
-        this.seeTime = 0;
-        this.state = State.IDLE;
-        this.reloadTicksRemaining = 0;
-    }
+    public void start() { this.seeTime = 0; this.state = State.IDLE; this.reloadTicksRemaining = 0; }
 
     @Override
-    public void stop() {
-        this.state = State.IDLE;
-        this.reloadTicksRemaining = 0;
-        try {
-            mob.stopUsingItem();
-        } catch (Throwable ignored) {}
-    }
+    public void stop() { this.state = State.IDLE; this.reloadTicksRemaining = 0; try { mob.stopUsingItem(); } catch (Throwable ignored) {} }
 
     @Override
     public void tick() {
@@ -75,24 +60,18 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (this.target == null || !this.target.isAlive()) return;
 
         boolean canSee = mob.getSensing().hasLineOfSight(target);
-        if (canSee) this.seeTime++;
-        else this.seeTime = 0;
+        this.seeTime = canSee ? this.seeTime + 1 : 0;
 
         ItemStack main = mob.getMainHandItem();
-        if (main == null || main.isEmpty()) {
-            this.state = State.IDLE;
-            return;
-        }
+        if (main == null || main.isEmpty()) { this.state = State.IDLE; return; }
 
         switch (state) {
             case IDLE -> {
                 int ammo = getOrInitInternalAmmo(main);
                 if (ammo <= 0) {
-                    // Only start reload if there is actual ammo in inventory (best-effort)
                     int available = JustEnoughGunsCompat.countAmmoInInventory(mob, main);
                     if (available <= 0) {
-                        // no ammo available -> can't reload
-                        LOGGER.debug("No ammo found in inventory for {} — skipping reload", mob);
+                        LOGGER.debug("No ammo found for {} — skipping reload", mob);
                         state = State.IDLE;
                     } else {
                         state = State.RELOAD;
@@ -108,19 +87,16 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 reloadTicksRemaining--;
                 if (reloadTicksRemaining <= 0) {
                     try { mob.stopUsingItem(); } catch (Throwable ignored) {}
-                    // Attempt to consume real ammo from inventory. Try to consume up to gun max.
                     Integer max = JustEnoughGunsCompat.getJegGunMaxAmmo(main);
                     int desired = (max != null && max > 0) ? Math.min(max, 30) : DEFAULT_INTERNAL_AMMO;
                     int consumed = JustEnoughGunsCompat.consumeAmmoFromInventory(mob, main, desired);
                     if (consumed > 0) {
-                        // refill internal ammo to the amount consumed (or desired)
                         int refill = Math.min(desired, consumed);
                         setInternalAmmo(main, refill);
                         try { mob.setItemSlot(EquipmentSlot.MAINHAND, main); } catch (Throwable ignored) {}
-                        LOGGER.debug("Reloaded {} ammo for {} (consumed {} items)", refill, mob, consumed);
                         state = State.AIM;
+                        LOGGER.debug("Reloaded {} ammo for {}", refill, mob);
                     } else {
-                        // nothing consumed: cannot reload — remain empty
                         setInternalAmmo(main, 0);
                         try { mob.setItemSlot(EquipmentSlot.MAINHAND, main); } catch (Throwable ignored) {}
                         LOGGER.debug("Reload attempted but no ammo consumed for {}", mob);
@@ -130,26 +106,18 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             }
 
             case AIM -> {
-                if (canSee && ++seeTime >= AIM_TICKS) {
-                    seeTime = 0;
-                    state = State.SHOOT;
-                } else if (!canSee) {
-                    if (seeTime <= -10) state = State.IDLE;
-                }
+                if (canSee && ++seeTime >= AIM_TICKS) { seeTime = 0; state = State.SHOOT; }
+                else if (!canSee) { if (seeTime <= -10) state = State.IDLE; }
                 try { mob.getLookControl().setLookAt(target); } catch (Throwable ignored) {}
             }
 
             case SHOOT -> {
                 int ammo = getOrInitInternalAmmo(main);
                 if (ammo > 0) {
-                    // decrement internal ammo and persist
                     setInternalAmmo(main, ammo - 1);
                     try { mob.setItemSlot(EquipmentSlot.MAINHAND, main); } catch (Throwable ignored) {}
-
-                    // optionally call JEG consume for compatibility (best-effort)
                     try { JustEnoughGunsCompat.consumeAmmoOnGun(main); } catch (Throwable ignored) {}
 
-                    // spawn a vanilla arrow as a simple visual projectile
                     try {
                         Arrow arrow = new Arrow(mob.level(), mob);
                         Vec3 eye = mob.getEyePosition(1.0F);
@@ -158,18 +126,17 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                         double dy = target.getY(0.3333333333333333D) - arrow.getY();
                         double dz = target.getZ() - mob.getZ();
                         double dist = Math.sqrt(dx * dx + dz * dz);
-                        arrow.shoot(dx, dy + dist * 0.20000000298023224D, dz, (float) ARROW_SPEED, ARROW_INACCURACY);
+                        arrow.shoot(dx, dy + dist * 0.20000000298023224D, dz, 1.6F, 14.0F);
                         mob.level().addFreshEntity(arrow);
                         mob.playSound(SoundEvents.TRIDENT_THROW, 1.0F, 1.0F);
                     } catch (Throwable t) {
-                        LOGGER.debug("Failed to spawn fallback projectile: {}", t.toString());
+                        LOGGER.debug("Failed spawn fallback projectile", t);
                     }
                 }
 
-                // after shooting decide next state
                 int remaining = getOrInitInternalAmmo(main);
                 if (remaining > 0) {
-                    state = State.RELOAD; // short reload between shots
+                    state = State.RELOAD;
                     reloadTicksRemaining = RELOAD_TICKS;
                     try { mob.startUsingItem(InteractionHand.MAIN_HAND); } catch (Throwable ignored) {}
                 } else {
@@ -183,14 +150,11 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (gun == null || gun.isEmpty()) return 0;
         try {
             CompoundTag tag = gun.getOrCreateTag();
-            if (tag.contains(INTERNAL_AMMO_KEY)) {
-                return tag.getInt(INTERNAL_AMMO_KEY);
-            } else {
-                Integer max = JustEnoughGunsCompat.getJegGunMaxAmmo(gun);
-                int initial = (max != null && max > 0) ? Math.min(max, 30) : DEFAULT_INTERNAL_AMMO;
-                tag.putInt(INTERNAL_AMMO_KEY, initial);
-                return initial;
-            }
+            if (tag.contains(INTERNAL_AMMO_KEY)) return tag.getInt(INTERNAL_AMMO_KEY);
+            Integer max = JustEnoughGunsCompat.getJegGunMaxAmmo(gun);
+            int initial = (max != null && max > 0) ? Math.min(max, 30) : DEFAULT_INTERNAL_AMMO;
+            tag.putInt(INTERNAL_AMMO_KEY, initial);
+            return initial;
         } catch (Throwable t) {
             return DEFAULT_INTERNAL_AMMO;
         }
@@ -198,18 +162,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private void setInternalAmmo(ItemStack gun, int val) {
         if (gun == null || gun.isEmpty()) return;
-        try {
-            CompoundTag tag = gun.getOrCreateTag();
-            tag.putInt(INTERNAL_AMMO_KEY, Math.max(0, val));
-        } catch (Throwable t) {
-            // swallow
-        }
+        try { gun.getOrCreateTag().putInt(INTERNAL_AMMO_KEY, Math.max(0, val)); } catch (Throwable ignored) {}
     }
 
-    private enum State {
-        IDLE,
-        RELOAD,
-        AIM,
-        SHOOT
-    }
+    private enum State { IDLE, RELOAD, AIM, SHOOT }
 }
