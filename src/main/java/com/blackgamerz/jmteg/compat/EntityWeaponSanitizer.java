@@ -1,6 +1,6 @@
 package com.blackgamerz.jmteg.compat;
 
-import com.blackgamerz.jmteg.jegcompat.JustEnoughGunsCompat;
+import com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;

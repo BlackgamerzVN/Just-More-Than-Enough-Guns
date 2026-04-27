@@ -1,7 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
-import com.blackgamerz.jmteg.jegcompat.JustEnoughGunsCompat;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;

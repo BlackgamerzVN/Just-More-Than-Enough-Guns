@@ -5,8 +5,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Minimal runtime config holder.
- * You can replace with a proper Forge config later.
+ * Minimal config: allow setting an ammo resource whitelist, and whether to use it.
  */
 public final class JmtegConfig {
     private static volatile boolean useWhitelist = false;

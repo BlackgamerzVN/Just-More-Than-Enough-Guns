@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.blackgamerz.jmteg.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "MixinAIGunEvent"
+  ],
+  "client": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

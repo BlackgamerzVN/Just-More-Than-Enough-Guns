@@ -1,6 +1,5 @@
 package com.blackgamerz.jmteg;
 
-import com.blackgamerz.jmteg.compat.CompatInitializer;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.Registries;
@@ -29,6 +28,9 @@ import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 import org.slf4j.Logger;
 
+import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
+import com.blackgamerz.jmteg.jegcompat.StubJEGCompat;
+
 // The value here should match an entry in the META-INF/mods.toml file
 @Mod(Main.MOD_ID)
 public class Main {
@@ -54,7 +56,11 @@ public class Main {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
-
+        if (JEGCompatManager.INSTANCE instanceof StubJEGCompat) {
+            LOGGER.info("JEG Compat: running WITHOUT real JEG integration (StubJEGCompat).");
+        } else {
+            LOGGER.info("JEG Compat: running WITH real JEG integration (ReflectiveJEGCompat).");
+        }
     }
 
     // Add the example block item to the building blocks tab
