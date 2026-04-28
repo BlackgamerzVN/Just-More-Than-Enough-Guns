@@ -7,8 +7,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.ai.goal.Goal;
 
-import com.blackgamerz.jmteg.jegcompat.coreJEG.Gun;
-import com.blackgamerz.jmteg.jegcompat.GunAmmoResolver;
+import com.blackgamerz.jmteg.jegcompat.Gun;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.EnumSet;

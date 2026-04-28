@@ -1,12 +1,9 @@
 package com.blackgamerz.jmteg.jegcompat;
 
-import com.blackgamerz.jmteg.jegcompat.coreJEG.Gun;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistries;
-
-import java.util.Map;
 
 import static com.blackgamerz.jmteg.jegcompat.GunDataManager.getAmmoTypeFromJson;
 

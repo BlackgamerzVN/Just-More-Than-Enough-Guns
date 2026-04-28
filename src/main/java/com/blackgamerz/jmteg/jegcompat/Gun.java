@@ -1,10 +1,7 @@
-package com.blackgamerz.jmteg.jegcompat.coreJEG;
+package com.blackgamerz.jmteg.jegcompat;
 
-import com.google.gson.JsonObject;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraftforge.registries.ForgeRegistries;
 
 public class Gun {
     public final ItemStack stack;
