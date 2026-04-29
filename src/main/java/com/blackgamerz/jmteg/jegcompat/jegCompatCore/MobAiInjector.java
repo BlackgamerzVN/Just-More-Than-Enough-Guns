@@ -117,7 +117,6 @@ public final class MobAiInjector {
                 } else {
                     LOG.debug("Join: no inventory ammo and pool already empty for mob {}", mob.getUUID());
                 }
-                main.getOrCreateTag().putInt("AmmoCount", 0);
                 mob.addTag(SEEDED_TAG);
             }
         } else {
@@ -196,7 +195,6 @@ public final class MobAiInjector {
                                             } else {
                                                 LOG.debug("Reapply: no inventory ammo and pool already empty for mob {}", id);
                                             }
-                                            main.getOrCreateTag().putInt("AmmoCount", 0);
                                             mob.addTag(SEEDED_TAG);
                                         }
                                     }
@@ -399,7 +397,6 @@ public final class MobAiInjector {
                                         } else {
                                             LOG.debug("Scanner: no inventory ammo and pool already empty for mob {}", id);
                                         }
-                                        main.getOrCreateTag().putInt("AmmoCount", 0);
                                         mob.addTag(SEEDED_TAG);
                                     }
                                 } else {
