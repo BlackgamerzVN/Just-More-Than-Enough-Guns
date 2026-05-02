@@ -18,9 +18,9 @@ license="${mod_license}"
 # A list of mods - how many allowed here is determined by the individual mod loader
 [[mods]] #mandatory
 # The modid of the mod
-modId="${mod_id} " #mandatory
+modId="jmteg" #mandatory
 # The version number of the mod
-version="${mod_version}" #mandatory
+version="0.1.0" #mandatory
 # A display name for the mod
 displayName="Just More than Enough Gun" #mandatory
 # A URL to query for updates for this mod. See the JSON update specification https://docs.minecraftforge.net/en/latest/misc/updatechecker/

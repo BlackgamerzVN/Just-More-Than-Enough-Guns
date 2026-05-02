@@ -107,7 +107,7 @@ public final class RecruitGoalOverrideHandler {
                                 String name = goal.getClass().getName();
                                 if (name.equals("com.talhanation.recruits.entities.ai.compat.RecruitRangedMusketAttackGoal")
                                         || name.equals("com.talhanation.recruits.entities.ai.RecruitRangedCrossbowAttackGoal")
-                                        || name.equals("ttv.migami.jeg.entity.ai.GunAttackGoal")) {
+                                        ) {
                                     int prio = wrap.getPriority();
                                     stored.add(new RemovedGoal(goal, prio));
                                     mob.goalSelector.removeGoal(goal);

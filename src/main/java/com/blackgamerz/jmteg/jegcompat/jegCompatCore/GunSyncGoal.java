@@ -13,7 +13,7 @@ import java.util.EnumSet;
 
 /**
  * Goal that keeps a mob's weapon AmmoCount in sync with a mob ammo pool (MobAmmoHelper).
- * - Detects increases in AmmoCount (someone else reloaded) and consumes from the pool.
+ * - Detects increases in AmmoCount (someone else reloaded) and consumes from the pool and inventory.
  * - When AmmoCount is 0 (or low) attempts to reload using mob pool.
  */
 public class GunSyncGoal extends Goal {
@@ -56,14 +56,32 @@ public class GunSyncGoal extends Goal {
         int cur = tag.getInt("AmmoCount");
         if (prevAmmoCount < 0) prevAmmoCount = cur;
 
-        // Case A: weapon was reloaded by other AI (e.g., Recruit). Consume pool for the added ammo.
+        // Case A: weapon was reloaded by other AI (e.g., Recruit). Consume inventory first, then pool for the added ammo.
         if (cur > prevAmmoCount) {
             int delta = cur - prevAmmoCount;
-            int consumed = MobAmmoHelper.consumeAmmo(mob, config.poolId, delta);
-            if (consumed < delta) {
-                // Pool lacked enough ammo: lower the magazine to what we could consume
-                tag.putInt("AmmoCount", prevAmmoCount + consumed);
-                cur = prevAmmoCount + consumed;
+
+            // Try to consume from inventory first (inventory-first semantics).
+            int consumedFromInv = 0;
+            try {
+                consumedFromInv = MobAiInjector.removeAmmoFromInventory(mob, config.poolId, delta);
+            } catch (Throwable t) {
+                // defensive: if reflection helper fails, fallback to pool-only below
+            }
+
+            int remaining = delta - consumedFromInv;
+            int consumedFromPool = 0;
+            if (remaining > 0) {
+                consumedFromPool = MobAmmoHelper.consumeAmmo(mob, config.poolId, remaining);
+            }
+
+            int totalConsumed = consumedFromInv + consumedFromPool;
+            if (totalConsumed < delta) {
+                // Pool + inventory lacked enough ammo: lower the magazine to what we could consume
+                tag.putInt("AmmoCount", prevAmmoCount + totalConsumed);
+                cur = prevAmmoCount + totalConsumed;
+            } else {
+                // We consumed the full delta (either from inv, pool or both) — keep the increased magazine
+                // cur already contains the new magazine value
             }
         }
 
