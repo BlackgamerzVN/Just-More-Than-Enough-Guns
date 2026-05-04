@@ -99,9 +99,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int strafeTimer = 0;
     private int strafeDirection = 1; // +1 = right, -1 = left
 
+    /** Default initial strafe half-period used in the constructor before the first role detection. */
+    private static final int DEFAULT_STRAFE_INIT_TICKS = 20; // half of BASIC_RANGED strafeChangeTicks
+
     public RecruitRangedGunnerAttackGoal(PathfinderMob mob) {
         this.mob = mob;
-        this.strafeTimer = currentProfile.strafeChangeTicks / 2;
+        this.strafeTimer = DEFAULT_STRAFE_INIT_TICKS;
         this.strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
     }
 
@@ -196,7 +199,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
             case AIM -> {
-                // If target too close, retreat a bit while still aiming
+                // Positioning while aiming — three exclusive branches:
+                //   1. Retreat: target is inside safe distance → back away.
+                //   2. Strafe:  safe and strafeEnabled → circle/strafe the target.
+                //   3. Stand:   safe and !strafeEnabled (heavy role) → plant feet.
                 double safeSq = currentProfile.safeDistance * currentProfile.safeDistance;
 
                 if (distSq < safeSq) {
