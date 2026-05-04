@@ -95,6 +95,38 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     /** Effective attack range at weight=0.0 is this fraction of ATTACK_RANGE. */
     private static final double MIN_RANGE_FACTOR            = 0.625;
 
+    // Role-aware target-selection tuning ──────────────────────────────────────
+    // These constants control the scoring formulae for each role.  Adjust to taste.
+
+    /** Minimum entity-scan radius (blocks) used by pickBestRoleAwareTarget(). */
+    private static final double MIN_TARGET_SEARCH_RADIUS = 24.0;
+
+    // SIDEARM: inverse-square distance scoring
+    /** Numerator for the SIDEARM inverse-square distance score (higher = prefer closer more). */
+    private static final double SIDEARM_SCORE_MULTIPLIER = 4.0;
+    /** Offset added to distance before squaring, preventing division-by-zero at point-blank range. */
+    private static final double SIDEARM_DISTANCE_OFFSET  = 0.5;
+
+    // TACTICAL_RANGED: LOS + health + distance
+    /** Score bonus awarded when the recruit has a clear line of sight to the target. */
+    private static final double TACTICAL_LOS_BONUS       = 1.5;
+    /** Distance scale divisor in the TACTICAL_RANGED distance component (higher = more forgiving). */
+    private static final double TACTICAL_DISTANCE_SCALE  = 0.5;
+
+    // HEAVY: cluster-of-enemies scoring
+    /** Radius (blocks) around a candidate target used to count nearby enemies for HEAVY scoring. */
+    private static final double HEAVY_CLUSTER_RADIUS     = 6.0;
+    /** Score weight applied to each enemy found in the cluster radius. */
+    private static final double HEAVY_CLUSTER_WEIGHT     = 1.2;
+    /** Distance scale divisor in the HEAVY distance tiebreaker component. */
+    private static final double HEAVY_DISTANCE_SCALE     = 0.1;
+
+    // UTILITY: ally-threat scoring
+    /** Score multiplier applied to the threat bonus when an enemy is targeting a friendly. */
+    private static final double UTILITY_THREAT_WEIGHT    = 2.0;
+    /** Distance offset preventing division-by-zero in the UTILITY distance component. */
+    private static final double UTILITY_DISTANCE_OFFSET  = 0.1;
+
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
     private static final String JMTEG_ORIG_SPREAD = "jmteg_original_spread";
@@ -706,7 +738,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * so entity scanning does not occur every tick.
      */
     private void pickBestRoleAwareTarget() {
-        double searchRadius = Math.max(currentProfile.preferredRange * 2.0, 24.0);
+        double searchRadius = Math.max(currentProfile.preferredRange * 2.0, MIN_TARGET_SEARCH_RADIUS);
         List<LivingEntity> candidates = mob.level().getEntitiesOfClass(
                 LivingEntity.class,
                 mob.getBoundingBox().inflate(searchRadius),
@@ -754,7 +786,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * produce a large preference for the nearer target.
      */
     private static double scoreForSidearm(double dist) {
-        return 4.0 / ((dist + 0.5) * (dist + 0.5));
+        double d = dist + SIDEARM_DISTANCE_OFFSET;
+        return SIDEARM_SCORE_MULTIPLIER / (d * d);
     }
 
     /**
@@ -774,11 +807,11 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * </ul>
      */
     private double scoreForTacticalRanged(double dist, LivingEntity target) {
-        double losBonus     = mob.hasLineOfSight(target) ? 1.5 : 0.0;
+        double losBonus     = mob.hasLineOfSight(target) ? TACTICAL_LOS_BONUS : 0.0;
         double healthRatio  = target.getMaxHealth() > 0
                               ? target.getHealth() / target.getMaxHealth() : 1.0;
         double exposedBonus = 1.0 - healthRatio; // 0 (full health) → 1 (nearly dead)
-        double distScore    = 1.0 / (dist * 0.5 + 1.0);
+        double distScore    = 1.0 / (dist * TACTICAL_DISTANCE_SCALE + 1.0);
         return losBonus + exposedBonus + distScore;
     }
 
@@ -787,8 +820,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * A large cluster count dominates; distance acts as a tiebreaker.
      */
     private double scoreForHeavy(double dist, LivingEntity target) {
-        int cluster = countNearbyEnemies(target, 6.0); // enemies within 6 blocks of the target
-        return cluster * 1.2 + 1.0 / (dist * 0.1 + 1.0);
+        int cluster = countNearbyEnemies(target, HEAVY_CLUSTER_RADIUS);
+        return cluster * HEAVY_CLUSTER_WEIGHT + 1.0 / (dist * HEAVY_DISTANCE_SCALE + 1.0);
     }
 
     /**
@@ -797,12 +830,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      */
     private double scoreForUtility(double dist, LivingEntity target) {
         double threatBonus = computeAllyThreatBonus(target);
-        return threatBonus * 2.0 + 1.0 / (dist + 0.1);
+        return threatBonus * UTILITY_THREAT_WEIGHT + 1.0 / (dist + UTILITY_DISTANCE_OFFSET);
     }
 
     /**
-     * Returns the count of valid enemy entities within {@code radius} blocks of {@code center}.
-     * Used by the HEAVY role scorer to identify clustered target groups.
+     * Returns the count of valid enemy entities within {@link #HEAVY_CLUSTER_RADIUS} blocks of
+     * {@code center}.  Used by the HEAVY role scorer to identify clustered target groups.
      */
     private int countNearbyEnemies(LivingEntity center, double radius) {
         return mob.level().getEntitiesOfClass(
