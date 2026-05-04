@@ -1,6 +1,8 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -23,6 +25,10 @@ import java.util.EnumSet;
  * - Strafing + retreat while aiming: the recruit will strafe left/right and retreat when target is too close
  * - Temporary ADS-like spread reduction: while the recruit is in AIM state we temporarily lower the held
  *   gun's spread value in NBT so JEG treats the weapon as if the shooter were aiming (player ADS).
+ * - Role-weight stat modifiers: aim time, cooldown, ADS spread benefit, and attack range are all
+ *   scaled by how appropriate the held gun is for this recruit's tier.  A Bowman forced to use a
+ *   rocket launcher (weight≈0) will aim slower, fire less accurately, cool down slower, and engage
+ *   at shorter range than a CrossBowman holding the same weapon (weight=1.0).
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -33,7 +39,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private State state = State.IDLE;
 
     private static final double ATTACK_RANGE = 16.0;
-    private static final double ATTACK_RANGE_SQ = ATTACK_RANGE * ATTACK_RANGE;
 
     // Safety / avoidance tuning
     private static final double SAFE_DISTANCE = 4.0; // recruit will try to stay at least this far (blocks)
@@ -61,7 +66,19 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     // ADS-like spread multiplier: while AIMing the gun's stored spread will be multiplied by this.
     // 1.0 = no change, 0.5 = half spread (more accurate). Tweak to your taste.
+    // This is the best-case (weight=1.0) multiplier; inappropriate guns receive less benefit.
     private static final float ADS_SPREAD_MULTIPLIER = 0.025f;
+
+    // Role-weight stat modifiers ──────────────────────────────────────────────
+    // All three affect behaviour when the held gun is "inappropriate" for this recruit's tier
+    // (i.e. its role-weight < 1.0).  At weight=1.0 these have no effect.
+
+    /** Aim time at weight=0.0 will be this many times longer than at weight=1.0. */
+    private static final double MAX_AIM_PENALTY_FACTOR      = 2.5;
+    /** Cooldown at weight=0.0 will be this many times longer than at weight=1.0. */
+    private static final double MAX_COOLDOWN_PENALTY_FACTOR = 2.0;
+    /** Effective attack range at weight=0.0 is this fraction of ATTACK_RANGE. */
+    private static final double MIN_RANGE_FACTOR            = 0.625;
 
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
@@ -127,9 +144,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         double distSq = mob.distanceToSqr(target);
         double dist = Math.sqrt(distSq);
 
+        double effectiveRange   = getEffectiveAttackRange();
+        double effectiveRangeSq = effectiveRange * effectiveRange;
+
         switch (state) {
             case IDLE -> {
-                if (distSq > ATTACK_RANGE_SQ) {
+                if (distSq > effectiveRangeSq) {
                     state = State.SEEK;
                 } else {
                     state = State.AIM;
@@ -138,7 +158,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
             case SEEK -> {
-                if (distSq > ATTACK_RANGE_SQ) {
+                if (distSq > effectiveRangeSq) {
                     mob.getNavigation().moveTo(target, 1.1D);
                 } else {
                     mob.getNavigation().stop();
@@ -228,16 +248,22 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
     }
 
-    // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy
-    private static int computeAimTicks(double distance) {
+    // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
+    // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier.
+    private int computeAimTicks(double distance) {
         double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
-        // linear interpolate between MIN and MAX
-        return (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
+        int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
+        double weight  = getHeldGunWeight();
+        double penalty = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        return (int) Math.round(base * penalty);
     }
 
-    private static int computeCooldownTicks(double distance) {
+    private int computeCooldownTicks(double distance) {
         double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
-        return (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
+        int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
+        double weight  = getHeldGunWeight();
+        double penalty = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        return (int) Math.round(base * penalty);
     }
 
     private static double clamp(double v, double a, double b) {
@@ -270,12 +296,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             if (generalTag.contains("Spread")) {
                 float orig = generalTag.getFloat("Spread");
                 tag.putFloat(JMTEG_ORIG_SPREAD, orig);
-                generalTag.putFloat("Spread", orig * ADS_SPREAD_MULTIPLIER);
+                generalTag.putFloat("Spread", orig * computeAdsSpreadMultiplier());
             } else {
                 // no explicit Spread stored in NBT; we still mark that we applied ADS but stash a sentinel
                 tag.putFloat(JMTEG_ORIG_SPREAD, Float.NaN);
                 // proactively write a reduced spread so JEG will pick it up when it deserializes
-                generalTag.putFloat("Spread", ADS_SPREAD_MULTIPLIER * 1.0F); // 1.0F is a safe default baseline
+                generalTag.putFloat("Spread", computeAdsSpreadMultiplier() * 1.0F); // 1.0F is a safe default baseline
             }
 
             gunTag.put("General", generalTag);
@@ -445,6 +471,54 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (angle >= 180.0f) angle -= 360.0f;
         if (angle < -180.0f) angle += 360.0f;
         return angle;
+    }
+
+    // ── Role-weight stat-modifier helpers ─────────────────────────────────────
+
+    /**
+     * Returns the role-preference weight (0.0 – 1.0) of the mob's currently held gun
+     * within this recruit's tier config.
+     * <ul>
+     *   <li>1.0 – perfectly appropriate gun (full performance)</li>
+     *   <li>0.0 – gun not in any accessible role pool (maximum penalty)</li>
+     * </ul>
+     * Returns 1.0 (no penalty) on any error or when no gun is held.
+     */
+    private double getHeldGunWeight() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return 1.0;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id == null) return 1.0;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            return RecruitGunSelector.getRoleWeight(id, tier);
+        } catch (Throwable t) {
+            return 1.0; // safe: no penalty when information is unavailable
+        }
+    }
+
+    /**
+     * Returns the effective attack range (blocks) for the currently held gun.
+     * At weight=1.0 this equals {@link #ATTACK_RANGE}; at weight=0.0 it is
+     * {@link #ATTACK_RANGE} × {@link #MIN_RANGE_FACTOR}.
+     */
+    private double getEffectiveAttackRange() {
+        double weight = getHeldGunWeight();
+        return ATTACK_RANGE * (MIN_RANGE_FACTOR + weight * (1.0 - MIN_RANGE_FACTOR));
+    }
+
+    /**
+     * Returns the ADS spread multiplier to apply while aiming.
+     * At weight=1.0 this is {@link #ADS_SPREAD_MULTIPLIER} (maximum accuracy benefit).
+     * At weight=0.0 this is 1.0 (no accuracy benefit — the recruit cannot benefit from aiming
+     * with a weapon they are not trained to use).
+     */
+    private float computeAdsSpreadMultiplier() {
+        double weight = getHeldGunWeight();
+        return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - weight));
     }
 
     /**
