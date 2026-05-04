@@ -70,7 +70,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private static final float ADS_SPREAD_MULTIPLIER = 0.025f;
 
     // Role-weight stat modifiers ──────────────────────────────────────────────
-    // All three affect behaviour when the held gun is "inappropriate" for this recruit's tier
+    // All four affect behaviour when the held gun is "inappropriate" for this recruit's tier
     // (i.e. its role-weight < 1.0).  At weight=1.0 these have no effect.
 
     /** Aim time at weight=0.0 will be this many times longer than at weight=1.0. */
