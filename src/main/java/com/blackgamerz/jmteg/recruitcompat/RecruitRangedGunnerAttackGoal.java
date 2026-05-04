@@ -3,6 +3,7 @@ package com.blackgamerz.jmteg.recruitcompat;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -14,6 +15,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 import java.util.EnumSet;
+import java.util.List;
 
 /**
  * Movement/aim-only fallback for recruits holding JEG guns.
@@ -35,6 +37,11 @@ import java.util.EnumSet;
  *   that drives preferred engagement range, safe distance, retreat speed, and whether the recruit
  *   strafes while aiming.  The profile is refreshed every 20 ticks so it adapts automatically
  *   when the recruit's held weapon changes.
+ * - Role-aware target selection: every 20 ticks (same cadence as the profile refresh) the recruit
+ *   re-scores nearby enemies and picks the tactically best one for its current role — SIDEARM
+ *   closes on the nearest threat, TACTICAL_RANGED hunts exposed / low-health targets, HEAVY
+ *   walks into the largest enemy cluster, and UTILITY recruits prioritise enemies that are
+ *   actively attacking nearby allies.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -162,6 +169,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 LOGGER.debug("{} switched to role profile {} (role={})",
                         mob, currentProfile, cachedRole);
             }
+            // Re-score nearby enemies on the same cadence as the profile refresh so the
+            // recruit shifts to a tactically appropriate target without per-tick scanning.
+            pickBestRoleAwareTarget();
         }
 
         LivingEntity target = mob.getTarget();
@@ -675,5 +685,142 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         } catch (Throwable ignored) {
         }
         return DEFAULT_PROJECTILE_GRAVITY;
+    }
+
+    // ── Role-aware target selection ───────────────────────────────────────────
+
+    /**
+     * Scans nearby living entities, scores each one according to the current gun role,
+     * and calls {@code mob.setTarget(best)} to override the standard nearest-enemy selection.
+     *
+     * <p>Scoring rules per role:
+     * <ul>
+     *   <li><b>SIDEARM</b>        – strongly prefers the closest threat (inverse-square of distance).</li>
+     *   <li><b>BASIC_RANGED</b>   – prefers the nearest enemy (safe default; inverse of distance).</li>
+     *   <li><b>TACTICAL_RANGED</b>– prefers exposed (clear line-of-sight) and weakened targets.</li>
+     *   <li><b>HEAVY</b>          – prefers targets that are surrounded by the most enemies.</li>
+     *   <li><b>UTILITY</b>        – prefers enemies that are currently targeting nearby allies.</li>
+     * </ul>
+     *
+     * <p>Only called during the profile-refresh window (every {@link #ROLE_CACHE_INTERVAL} ticks)
+     * so entity scanning does not occur every tick.
+     */
+    private void pickBestRoleAwareTarget() {
+        double searchRadius = Math.max(currentProfile.preferredRange * 2.0, 24.0);
+        List<LivingEntity> candidates = mob.level().getEntitiesOfClass(
+                LivingEntity.class,
+                mob.getBoundingBox().inflate(searchRadius),
+                e -> e != mob && e.isAlive() && !mob.isAlliedTo(e) && mob.canAttack(e));
+
+        if (candidates.isEmpty()) {
+            return;
+        }
+
+        LivingEntity best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (LivingEntity candidate : candidates) {
+            double score = scoreTargetForRole(candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        if (best != null) {
+            mob.setTarget(best);
+        }
+    }
+
+    /**
+     * Computes a priority score for a target candidate based on {@link #cachedRole}.
+     * Higher score = higher priority.  Scores from different roles are not directly
+     * comparable, but within any one role they rank candidates correctly.
+     */
+    private double scoreTargetForRole(LivingEntity target) {
+        double dist = mob.distanceTo(target);
+        RecruitGunRole role = cachedRole != null ? cachedRole : RecruitGunRole.BASIC_RANGED;
+        return switch (role) {
+            case SIDEARM         -> scoreForSidearm(dist);
+            case BASIC_RANGED    -> scoreForBasicRanged(dist);
+            case TACTICAL_RANGED -> scoreForTacticalRanged(dist, target);
+            case HEAVY           -> scoreForHeavy(dist, target);
+            case UTILITY         -> scoreForUtility(dist, target);
+        };
+    }
+
+    /**
+     * SIDEARM: strongly prefers the closest threat.
+     * Score decays as inverse-square of distance so even modest range differences
+     * produce a large preference for the nearer target.
+     */
+    private static double scoreForSidearm(double dist) {
+        return 4.0 / ((dist + 0.5) * (dist + 0.5));
+    }
+
+    /**
+     * BASIC_RANGED: simple nearest-first — inverse of distance.
+     * Reproduces the vanilla "attack nearest enemy" behaviour as a baseline.
+     */
+    private static double scoreForBasicRanged(double dist) {
+        return 1.0 / (dist + 0.1);
+    }
+
+    /**
+     * TACTICAL_RANGED: rifles prefer exposed and vulnerable targets.
+     * <ul>
+     *   <li>+1.5 bonus when the recruit has clear line of sight (no cover).</li>
+     *   <li>+0–1.0 bonus proportional to how much health the target has already lost.</li>
+     *   <li>Small distance component breaks ties in favour of closer targets.</li>
+     * </ul>
+     */
+    private double scoreForTacticalRanged(double dist, LivingEntity target) {
+        double losBonus     = mob.hasLineOfSight(target) ? 1.5 : 0.0;
+        double healthRatio  = target.getMaxHealth() > 0
+                              ? target.getHealth() / target.getMaxHealth() : 1.0;
+        double exposedBonus = 1.0 - healthRatio; // 0 (full health) → 1 (nearly dead)
+        double distScore    = 1.0 / (dist * 0.5 + 1.0);
+        return losBonus + exposedBonus + distScore;
+    }
+
+    /**
+     * HEAVY (rocket launchers / miniguns): prefers clustered enemy groups.
+     * A large cluster count dominates; distance acts as a tiebreaker.
+     */
+    private double scoreForHeavy(double dist, LivingEntity target) {
+        int cluster = countNearbyEnemies(target, 6.0); // enemies within 6 blocks of the target
+        return cluster * 1.2 + 1.0 / (dist * 0.1 + 1.0);
+    }
+
+    /**
+     * UTILITY / support: prefers enemies that are actively threatening nearby allies.
+     * Falls back to nearest when no immediate ally threat is detected.
+     */
+    private double scoreForUtility(double dist, LivingEntity target) {
+        double threatBonus = computeAllyThreatBonus(target);
+        return threatBonus * 2.0 + 1.0 / (dist + 0.1);
+    }
+
+    /**
+     * Returns the count of valid enemy entities within {@code radius} blocks of {@code center}.
+     * Used by the HEAVY role scorer to identify clustered target groups.
+     */
+    private int countNearbyEnemies(LivingEntity center, double radius) {
+        return mob.level().getEntitiesOfClass(
+                LivingEntity.class,
+                center.getBoundingBox().inflate(radius),
+                e -> e != mob && e != center && e.isAlive()
+                        && !mob.isAlliedTo(e) && mob.canAttack(e)
+        ).size();
+    }
+
+    /**
+     * Returns 1.0 if {@code enemy} is currently targeting an allied entity, 0.0 otherwise.
+     * Used by the UTILITY role scorer to prioritise threats to friendly units.
+     */
+    private double computeAllyThreatBonus(LivingEntity enemy) {
+        if (!(enemy instanceof Mob enemyMob)) return 0.0;
+        LivingEntity enemyTarget = enemyMob.getTarget();
+        if (enemyTarget == null) return 0.0;
+        return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
     }
 }
