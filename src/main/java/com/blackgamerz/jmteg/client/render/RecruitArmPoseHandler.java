@@ -27,10 +27,7 @@ import net.minecraftforge.registries.ForgeRegistries;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.Map;
-import java.util.WeakHashMap;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * Client-side renderer helper for Recruits holding Just Enough Guns weapons.
@@ -60,6 +57,10 @@ public final class RecruitArmPoseHandler {
 
     // Track last-seen main-hand for nearby mobs on client so we can detect equips.
     private static final Map<LivingEntity, ItemStack> lastSeenMainHand = new WeakHashMap<>();
+
+    // (use Collections.synchronizedMap + WeakHashMap so entries don't keep entities alive)
+    private static final int CLEAR_RETRY_TICKS = 8; // retry for 8 client ticks ~ 0.4s
+    private static final Map<LivingEntity, Integer> pendingClears = Collections.synchronizedMap(new WeakHashMap<>());
 
     private RecruitArmPoseHandler() {}
 
@@ -189,8 +190,8 @@ public final class RecruitArmPoseHandler {
     public static void onEquipmentChanged(LivingEquipmentChangeEvent event) {
         var ent = event.getEntity();
         if (!(ent instanceof LivingEntity)) return;
-
-        clearModelMappingForEntity((LivingEntity) ent);
+        LivingEntity le = ent;
+        pendingClears.put(le, CLEAR_RETRY_TICKS);
     }
 
     /**
@@ -217,6 +218,27 @@ public final class RecruitArmPoseHandler {
 
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
+
+        // First, handle pending clears (from joins/equipment-changes)
+        synchronized (pendingClears) {
+            Iterator<Map.Entry<LivingEntity, Integer>> it = pendingClears.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<LivingEntity, Integer> e = it.next();
+                LivingEntity ent = e.getKey();
+                Integer ticksLeft = e.getValue();
+                if (ent == null || !ent.isAlive() || ticksLeft == null || ticksLeft <= 0) {
+                    it.remove();
+                    continue;
+                }
+                boolean ok = clearModelMappingForEntity(ent);
+                if (ok) {
+                    it.remove();
+                } else {
+                    e.setValue(ticksLeft - 1);
+                }
+            }
+        }
+
         if (event.phase != TickEvent.Phase.END) return;
         clientTickCounter++;
         if ((clientTickCounter % CLIENT_TICK_SCAN_INTERVAL) != 0) return;
@@ -271,14 +293,13 @@ public final class RecruitArmPoseHandler {
         }
     }
 
-    // Replace existing clearModelMappingForEntity with this implementation
-    private static void clearModelMappingForEntity(LivingEntity ent) {
+    private static boolean clearModelMappingForEntity(LivingEntity ent) {
         try {
             Minecraft mc = Minecraft.getInstance();
             EntityRenderDispatcher disp = mc.getEntityRenderDispatcher();
-            if (disp == null) return;
+            if (disp == null) return false;
             EntityRenderer<?> renderer = disp.getRenderer(ent);
-            if (renderer == null) return;
+            if (renderer == null) return false;
 
             // If MobRenderer, prefer getModel()
             if (renderer instanceof MobRenderer<?, ?> mobRenderer) {
@@ -286,7 +307,7 @@ public final class RecruitArmPoseHandler {
                     Object model = mobRenderer.getModel();
                     if (model instanceof HumanoidModel<?> hm) {
                         synchronized (originalPoses) { originalPoses.remove(hm); }
-                        return;
+                        return true;
                     }
                 } catch (Throwable ignored) {
                     // continue to reflective search
@@ -294,8 +315,8 @@ public final class RecruitArmPoseHandler {
             }
 
             // Reflectively search any field on the renderer that *contains* a HumanoidModel instance.
-            // This is robust across different renderers / mappings / obfuscations.
             Class<?> cls = renderer.getClass();
+            boolean removedAny = false;
             while (cls != null && cls != Object.class) {
                 for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
                     try {
@@ -303,14 +324,26 @@ public final class RecruitArmPoseHandler {
                         Object val = f.get(renderer);
                         if (val instanceof HumanoidModel<?> hm) {
                             synchronized (originalPoses) { originalPoses.remove(hm); }
-                            // do NOT return immediately; it may have multiple model fields (remove all)
+                            removedAny = true;
+                            // do not return; continue scanning (may have multiple)
+                        } else if (val instanceof Iterable<?> it) {
+                            for (Object o : it) {
+                                if (o instanceof HumanoidModel<?> hm2) {
+                                    synchronized (originalPoses) { originalPoses.remove(hm2); }
+                                    removedAny = true;
+                                }
+                            }
                         }
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable ignored) {
+                        // ignore and continue
+                    }
                 }
                 cls = cls.getSuperclass();
             }
+            return removedAny;
         } catch (Throwable t) {
             LOGGER.debug("clearModelMappingForEntity failed", t);
+            return false;
         }
     }
 }
