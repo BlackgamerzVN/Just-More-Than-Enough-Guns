@@ -9,6 +9,8 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 import java.util.EnumSet;
@@ -29,29 +31,35 @@ import java.util.EnumSet;
  *   scaled by how appropriate the held gun is for this recruit's tier.  A Bowman forced to use a
  *   rocket launcher (weight≈0) will aim slower, fire less accurately, cool down slower, and engage
  *   at shorter range than a CrossBowman holding the same weapon (weight=1.0).
+ * - Role-specific pathfinding: each {@link RecruitGunRole} has its own {@link RecruitRoleProfile}
+ *   that drives preferred engagement range, safe distance, retreat speed, and whether the recruit
+ *   strafes while aiming.  The profile is refreshed every 20 ticks so it adapts automatically
+ *   when the recruit's held weapon changes.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
 public class RecruitRangedGunnerAttackGoal extends Goal {
+    private static final Logger LOGGER = LogManager.getLogger("JMTEG-AttackGoal");
+
     private final PathfinderMob mob;
 
     private enum State { IDLE, SEEK, AIM, COOLDOWN }
     private State state = State.IDLE;
 
-    private static final double ATTACK_RANGE = 16.0;
+    // ── Role-profile cache ────────────────────────────────────────────────────
+    // Refreshed every ROLE_CACHE_INTERVAL ticks (or immediately when the role changes).
 
-    // Safety / avoidance tuning
-    private static final double SAFE_DISTANCE = 4.0; // recruit will try to stay at least this far (blocks)
-    private static final double SAFE_EXIT_BUFFER = 2.0; // add this to SAFE_DISTANCE to exit avoiding
+    /** How often (ticks) to re-detect the held gun's role and rebuild the movement profile. */
+    private static final int ROLE_CACHE_INTERVAL = 20;
 
-    // Strafing tuning
-    private static final double STRAFE_DISTANCE = 1.5; // lateral offset in blocks when strafing
-    private static final int STRAFE_CHANGE_TICKS = 40; // how often to choose a new strafe direction
-    private static final double STRAFE_SPEED = 1.0D; // navigation speed while strafing
-    private static final double RETREAT_SPEED = 1.25D; // speed used when retreating
-    private static final double RETREAT_EXTRA = 1.5; // extra distance when retreating beyond SAFE_DISTANCE
+    /** Last detected gun role (null = unknown / not in any pool). */
+    private RecruitGunRole cachedRole = null;
+    /** Movement/positioning profile derived from {@link #cachedRole}. */
+    private RecruitRoleProfile currentProfile = RecruitRoleProfile.forRole(null);
+    /** Counts down from ROLE_CACHE_INTERVAL; profile is refreshed when it reaches 0. */
+    private int roleCacheTick = 0;
 
-    // Tuning: adjust these for server/mod config
+    // ── Tuning: aim / cooldown timing ─────────────────────────────────────────
     private static final int MIN_AIM_TICKS = 5;
     private static final int MAX_AIM_TICKS = 40; // far targets get longer aim time
     private static final int MIN_COOLDOWN_TICKS = 8;
@@ -93,7 +101,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     public RecruitRangedGunnerAttackGoal(PathfinderMob mob) {
         this.mob = mob;
-        this.strafeTimer = STRAFE_CHANGE_TICKS / 2;
+        this.strafeTimer = currentProfile.strafeChangeTicks / 2;
         this.strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
     }
 
@@ -119,8 +127,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
-        strafeTimer = STRAFE_CHANGE_TICKS / 2;
+        strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
+        // Force profile re-detection on next tick so the goal starts with current gun info
+        roleCacheTick = 0;
+        cachedRole = null;
+        currentProfile = RecruitRoleProfile.forRole(null);
     }
 
     @Override
@@ -133,6 +145,22 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     @Override
     public void tick() {
+        // ── Profile refresh ───────────────────────────────────────────────────
+        // Detect the held gun's role every ROLE_CACHE_INTERVAL ticks (or on first tick).
+        // When the role changes the profile is swapped immediately so movement parameters
+        // update without waiting for the full interval.
+        roleCacheTick--;
+        if (roleCacheTick <= 0) {
+            roleCacheTick = ROLE_CACHE_INTERVAL;
+            RecruitGunRole detectedRole = detectHeldGunRole();
+            if (detectedRole != cachedRole) {
+                cachedRole = detectedRole;
+                currentProfile = RecruitRoleProfile.forRole(cachedRole);
+                LOGGER.debug("{} switched to role profile {} (role={})",
+                        mob, currentProfile, cachedRole);
+            }
+        }
+
         LivingEntity target = mob.getTarget();
         if (target == null || !target.isAlive()) {
             // leaving aim — clean up any temporary ADS modifiers
@@ -159,7 +187,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             }
             case SEEK -> {
                 if (distSq > effectiveRangeSq) {
-                    mob.getNavigation().moveTo(target, 1.1D);
+                    mob.getNavigation().moveTo(target, currentProfile.approachSpeed);
                 } else {
                     mob.getNavigation().stop();
                     state = State.AIM;
@@ -169,11 +197,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             }
             case AIM -> {
                 // If target too close, retreat a bit while still aiming
-                double safeSq = SAFE_DISTANCE * SAFE_DISTANCE;
-                double exitSq = (SAFE_DISTANCE + SAFE_EXIT_BUFFER) * (SAFE_DISTANCE + SAFE_EXIT_BUFFER);
+                double safeSq = currentProfile.safeDistance * currentProfile.safeDistance;
 
                 if (distSq < safeSq) {
-                    // retreat directly away from target to reach SAFE_DISTANCE + RETREAT_EXTRA
+                    // retreat directly away from target to reach safeDistance + retreatExtra
                     double dx = mob.getX() - target.getX();
                     double dz = mob.getZ() - target.getZ();
                     double horiz = Math.sqrt(dx * dx + dz * dz);
@@ -184,19 +211,19 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                         dz = Math.sin(angle);
                         horiz = 1.0;
                     }
-                    double desiredDistance = SAFE_DISTANCE + RETREAT_EXTRA;
+                    double desiredDistance = currentProfile.safeDistance + currentProfile.retreatExtra;
                     double nx = target.getX() + (dx / horiz) * desiredDistance;
                     double nz = target.getZ() + (dz / horiz) * desiredDistance;
                     double ny = mob.getY();
 
-                    mob.getNavigation().moveTo(nx, ny, nz, RETREAT_SPEED);
-                } else {
+                    mob.getNavigation().moveTo(nx, ny, nz, currentProfile.retreatSpeed);
+                } else if (currentProfile.strafeEnabled) {
                     // Strafing behavior: pick lateral offsets around current position to circle/strafe target while aiming
                     // update timer and possibly flip direction
                     strafeTimer--;
                     if (strafeTimer <= 0) {
                         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
-                        strafeTimer = STRAFE_CHANGE_TICKS + mob.getRandom().nextInt(20);
+                        strafeTimer = currentProfile.strafeChangeTicks + mob.getRandom().nextInt(20);
                     }
 
                     // Compute perpendicular (left/right) to vector from mob to target
@@ -209,17 +236,20 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     double pz = dx / horiz;
 
                     // target strafe point around current mob position
-                    double strafeX = mob.getX() + px * STRAFE_DISTANCE * strafeDirection;
-                    double strafeZ = mob.getZ() + pz * STRAFE_DISTANCE * strafeDirection;
+                    double strafeX = mob.getX() + px * currentProfile.strafeDistance * strafeDirection;
+                    double strafeZ = mob.getZ() + pz * currentProfile.strafeDistance * strafeDirection;
                     double strafeY = mob.getY();
 
                     // Use navigation so mob can path around obstacles
-                    mob.getNavigation().moveTo(strafeX, strafeY, strafeZ, STRAFE_SPEED);
+                    mob.getNavigation().moveTo(strafeX, strafeY, strafeZ, currentProfile.strafeSpeed);
+                } else {
+                    // Heavy role: plant feet, stop navigation, aim precisely
+                    mob.getNavigation().stop();
                 }
 
                 // Closer targets can snap faster; farther targets get slower, steadier aim.
-                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / ATTACK_RANGE)) * 60.0, 10.0, 120.0);
-                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / ATTACK_RANGE)) * 40.0, 8.0, 90.0);
+                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
+                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
 
                 // Extract projectile properties (try JEG via reflection with multiple fallbacks)
                 float projectileSpeed = getHeldProjectileSpeed(mob);
@@ -251,7 +281,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
     // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier.
     private int computeAimTicks(double distance) {
-        double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
+        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
         double weight  = getHeldGunWeight();
         double penalty = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
@@ -259,7 +289,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     }
 
     private int computeCooldownTicks(double distance) {
-        double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
+        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
         double weight  = getHeldGunWeight();
         double penalty = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
@@ -502,12 +532,34 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /**
      * Returns the effective attack range (blocks) for the currently held gun.
-     * At weight=1.0 this equals {@link #ATTACK_RANGE}; at weight=0.0 it is
-     * {@link #ATTACK_RANGE} × {@link #MIN_RANGE_FACTOR}.
+     * Uses the role profile's preferred range as the base. At weight=1.0 this equals
+     * {@code currentProfile.preferredRange}; at weight=0.0 it is
+     * {@code currentProfile.preferredRange × MIN_RANGE_FACTOR}.
      */
     private double getEffectiveAttackRange() {
         double weight = getHeldGunWeight();
-        return ATTACK_RANGE * (MIN_RANGE_FACTOR + weight * (1.0 - MIN_RANGE_FACTOR));
+        return currentProfile.preferredRange * (MIN_RANGE_FACTOR + weight * (1.0 - MIN_RANGE_FACTOR));
+    }
+
+    /**
+     * Detects the {@link RecruitGunRole} of the held gun within this recruit's tier config.
+     * Returns {@code null} when the gun is not in any accessible role pool (the weight
+     * system will already penalise that case; the profile falls back to BASIC_RANGED).
+     */
+    private RecruitGunRole detectHeldGunRole() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return null;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id == null) return null;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            return RecruitGunSelector.detectRole(id, tier);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**
