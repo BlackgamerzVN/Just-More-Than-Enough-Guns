@@ -226,7 +226,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // recruit shifts to a tactically appropriate target without per-tick scanning.
             pickBestRoleAwareTarget();
             // Auto-unequip shield from two-handed (non-SIDEARM) gun recruits.
-            // This runs every ROLE_CACHE_INTERVAL ticks; the proactive check in
+            // This runs every 20 ticks (ROLE_CACHE_INTERVAL); the proactive check in
             // RecruitGoalOverrideHandler handles the case before the first tick.
             if (cachedRole != RecruitGunRole.SIDEARM) {
                 unequipShieldIfPresent();
@@ -907,7 +907,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      */
     private boolean hasShieldInOffhand() {
         ItemStack off = mob.getOffhandItem();
-        return off != null && !off.isEmpty() && off.getItem() instanceof ShieldItem;
+        return !off.isEmpty() && off.getItem() instanceof ShieldItem;
     }
 
     /**
@@ -999,8 +999,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * Removes the shield from the mob's offhand and drops it into the world.
      * Called for non-SIDEARM recruits to ensure they cannot passively hold a shield
      * while wielding a two-handed gun.  The dropped item can be re-collected normally
-     * but will be dropped again on the next role-refresh if the recruit equips it again
-     * while still carrying a two-handed weapon.
+     * but will be dropped again on the next 20-tick role-refresh if the recruit equips
+     * it again while still carrying a two-handed weapon.
      */
     private void unequipShieldIfPresent() {
         if (!hasShieldInOffhand()) return;
