@@ -31,11 +31,7 @@ public class GunSyncGoal extends Goal {
     public GunSyncGoal(PathfinderMob mob, GunConfig config) {
         this.mob = mob;
         this.config = config;
-        // No flags claimed: this goal only reads/writes NBT and does not move, look,
-        // or change targets.  Claiming MOVE/LOOK/TARGET flags would block higher-numbered
-        // (lower-importance) goals such as RecruitRangedGunnerAttackGoal from running,
-        // because priority-0 goals hold flags that prevent priority-1 goals from acquiring them.
-        this.setFlags(EnumSet.noneOf(Flag.class));
+        this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK, Flag.TARGET));
     }
 
     @Override
