@@ -76,17 +76,19 @@ public final class RecruitGoalOverrideHandler {
     }
 
     private static void addFallbackIfMissing(PathfinderMob mob) {
-        // Avoid duplicate fallback
-        boolean hasFallback = false;
+        // Check whether our custom goals are already present to avoid duplicates
+        boolean hasAttackGoal   = false;
+        boolean hasResupplyGoal = false;
         Collection<?> entries = mob.goalSelector.getAvailableGoals();
         if (entries != null) {
             for (Object entry : entries) {
                 try {
                     var getGoal = entry.getClass().getMethod("getGoal");
                     Object goal = getGoal.invoke(entry);
-                    if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
-                        hasFallback = true;
-                        break;
+                    if (goal != null) {
+                        String name = goal.getClass().getName();
+                        if (name.equals(RecruitRangedGunnerAttackGoal.class.getName())) hasAttackGoal   = true;
+                        if (name.equals(RecruitAmmoResupplyGoal.class.getName()))       hasResupplyGoal = true;
                     }
                 } catch (Throwable ignored) {}
             }
@@ -126,16 +128,20 @@ public final class RecruitGoalOverrideHandler {
 
         if (!stored.isEmpty()) removedGoals.put(mob, stored);
 
-        // Add fallback goal if missing
-        if (!hasFallback) {
-            int priority = 0; // adjust priority as needed for your AI stack
-            mob.goalSelector.addGoal(priority, new RecruitRangedGunnerAttackGoal(mob));
+        // Resupply goal at priority 0: preempts attack only when gun is empty, then yields immediately.
+        if (!hasResupplyGoal) {
+            mob.goalSelector.addGoal(0, new RecruitAmmoResupplyGoal(mob));
+            LOGGER.info("Added RecruitAmmoResupplyGoal to {}", mob);
+        }
+        // Attack goal at priority 1: runs normally when ammo is available.
+        if (!hasAttackGoal) {
+            mob.goalSelector.addGoal(1, new RecruitRangedGunnerAttackGoal(mob));
             LOGGER.info("Added fallback RecruitRangedGunnerAttackGoal to {}", mob);
         }
     }
 
     private static void restoreOriginalGoalsIfAny(PathfinderMob mob) {
-        // Remove fallback(s)
+        // Remove our custom goals (both attack and resupply)
         try {
             Collection<?> avail = mob.goalSelector.getAvailableGoals();
             if (avail != null) {
@@ -143,9 +149,13 @@ public final class RecruitGoalOverrideHandler {
                     try {
                         if (entry instanceof WrappedGoal wrap) {
                             Goal goal = wrap.getGoal();
-                            if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
-                                mob.goalSelector.removeGoal(goal);
-                                LOGGER.info("Removed fallback RecruitRangedGunnerAttackGoal from {}", mob);
+                            if (goal != null) {
+                                String name = goal.getClass().getName();
+                                if (name.equals(RecruitRangedGunnerAttackGoal.class.getName())
+                                        || name.equals(RecruitAmmoResupplyGoal.class.getName())) {
+                                    mob.goalSelector.removeGoal(goal);
+                                    LOGGER.info("Removed custom goal {} from {}", name, mob);
+                                }
                             }
                         }
                     } catch (Throwable ignored) {}
