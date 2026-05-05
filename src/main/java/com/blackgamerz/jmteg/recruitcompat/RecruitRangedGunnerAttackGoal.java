@@ -256,7 +256,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         // enter the RELOADING state so the recruit stops trying to aim or fire.
         // The watcher (MobAiInjector) and GunSyncGoal fill ammo after the configured
         // delay; this state simply waits until ammo is available again.
-        if (!isGunLoaded() && state != State.RELOADING && state != State.IDLE) {
+        if (!isGunLoaded() && state != State.RELOADING) {
             disableAdsOnHeldGun();
             state = State.RELOADING;
         }
@@ -1060,7 +1060,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private boolean isGunLoaded() {
         try {
             ItemStack stack = mob.getMainHandItem();
-            if (stack == null || stack.isEmpty()) return false;
+            if (stack.isEmpty()) return false;
             CompoundTag tag = stack.getTag();
             if (tag == null) return false;
             if (tag.contains("IgnoreAmmo", 1) && tag.getBoolean("IgnoreAmmo")) return true;
