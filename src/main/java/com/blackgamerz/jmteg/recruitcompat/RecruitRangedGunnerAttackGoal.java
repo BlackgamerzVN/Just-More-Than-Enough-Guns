@@ -1125,7 +1125,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             if (mob.isUsingItem()) mob.stopUsingItem();
             mob.startUsingItem(InteractionHand.MAIN_HAND);
             mob.releaseUsingItem();
-        } catch (Throwable t) {
+        } catch (Exception t) {
             LOGGER.debug("performFireAction failed for {}: {}", mob, t.toString());
         }
     }
