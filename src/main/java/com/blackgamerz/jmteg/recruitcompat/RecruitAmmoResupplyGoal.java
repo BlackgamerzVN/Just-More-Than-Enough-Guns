@@ -87,6 +87,10 @@ public class RecruitAmmoResupplyGoal extends Goal {
 
     @Override
     public boolean canUse() {
+        // Runtime ownership guard: prevents the goal from activating if this recruit later
+        // loses ownership or was registered before ownership was fully initialized.
+        // Non-ammo-aware recruits (wild / NPC) retain original infinite-reload behaviour.
+        if (!RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) return false;
         return isHeldGunOutOfAmmo();
     }
 
@@ -94,6 +98,7 @@ public class RecruitAmmoResupplyGoal extends Goal {
     public boolean canContinueToUse() {
         // Keep navigating even if the gun was somehow topped up mid-path; stop cleanly
         if (phase == Phase.MOVING_TO_CHEST) return true;
+        if (!RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) return false;
         return isHeldGunOutOfAmmo();
     }
 
