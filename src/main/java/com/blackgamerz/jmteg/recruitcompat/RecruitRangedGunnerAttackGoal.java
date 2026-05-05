@@ -17,10 +17,13 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.ShieldItem;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
 import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
@@ -156,6 +159,16 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int aimTimer = 0;
     private int cooldownTimer = 0;
 
+    // ── Burst-fire state ──────────────────────────────────────────────────────
+    /** Remaining shots in the current burst (0 = single-shot or burst complete). */
+    private int burstShotsRemaining = 0;
+    /** Ticks until the next burst shot fires; only relevant when burstShotsRemaining > 0. */
+    private int burstTimer = 0;
+    private static final int DEFAULT_BURST_DELAY_TICKS = 2;
+
+    // ── State-transition tracking for reload sounds ───────────────────────────
+    private State prevState = State.IDLE;
+
     // strafing state
     private int strafeTimer = 0;
     private int strafeDirection = 1; // +1 = right, -1 = left
@@ -191,6 +204,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
+        burstShotsRemaining = 0;
+        burstTimer = 0;
+        prevState = State.IDLE;
         strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
         // Force profile and doctrine re-detection on next tick so the goal starts with current info
@@ -204,6 +220,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     public void stop() {
         // ensure we remove any temporary ADS modifier when goal stops
         disableAdsOnHeldGun();
+        burstShotsRemaining = 0;
         lowerShield();
         mob.getNavigation().stop();
         this.state = State.IDLE;
@@ -247,6 +264,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (target == null || !target.isAlive()) {
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
+            burstShotsRemaining = 0;
             state = State.IDLE;
             return;
         }
@@ -264,6 +282,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         // delay; this state simply waits until ammo is available again.
         if (!isGunLoaded() && state != State.RELOADING) {
             disableAdsOnHeldGun();
+            burstShotsRemaining = 0;
             state = State.RELOADING;
         }
 
@@ -274,6 +293,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 } else {
                     state = State.AIM;
                     aimTimer = computeAimTicks(dist);
+                    burstShotsRemaining = 0;
                     enableAdsOnHeldGun(); // start ADS-like spread reduction
                 }
             }
@@ -284,6 +304,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     mob.getNavigation().stop();
                     state = State.AIM;
                     aimTimer = computeAimTicks(dist);
+                    burstShotsRemaining = 0;
                     enableAdsOnHeldGun(); // start ADS-like spread reduction
                 }
             }
@@ -354,12 +375,32 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 applyAdvancedAim(mob, target, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
 
                 aimTimer--;
-                if (aimTimer <= 0) {
-                    // Exiting AIM — restore spread, then fire the gun and enter cooldown.
+                if (aimTimer <= 0 && burstShotsRemaining == 0) {
+                    // Aim complete — fire first shot of burst (or single shot).
                     disableAdsOnHeldGun();
+                    int burstCount = getGunBurstCount(mob.getMainHandItem());
                     performFireAction();
-                    cooldownTimer = computeCooldownTicks(dist);
-                    state = State.COOLDOWN;
+                    burstShotsRemaining = burstCount - 1;
+                    if (burstShotsRemaining > 0) {
+                        burstTimer = DEFAULT_BURST_DELAY_TICKS;
+                        aimTimer = 0; // hold at 0 so burst-continuation branch runs next tick
+                    } else {
+                        cooldownTimer = computeCooldownTicks(dist);
+                        state = State.COOLDOWN;
+                    }
+                } else if (aimTimer <= 0 && burstShotsRemaining > 0) {
+                    // Inter-burst delay countdown; fire remaining shots.
+                    burstTimer--;
+                    if (burstTimer <= 0) {
+                        performFireAction();
+                        burstShotsRemaining--;
+                        if (burstShotsRemaining <= 0) {
+                            cooldownTimer = computeCooldownTicks(dist);
+                            state = State.COOLDOWN;
+                        } else {
+                            burstTimer = DEFAULT_BURST_DELAY_TICKS;
+                        }
+                    }
                 }
             }
             case COOLDOWN -> {
@@ -371,6 +412,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     } else {
                         state = State.AIM;
                         aimTimer = computeAimTicks(dist);
+                        burstShotsRemaining = 0;
                         enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
                     }
                 }
@@ -379,8 +421,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 // Wait for the watcher / GunSyncGoal to fill the gun after the configured delay.
                 if (isGunLoaded()) {
                     // Ammo available again — reset to IDLE so the normal seek/aim cycle restarts.
+                    burstShotsRemaining = 0;
                     state = State.IDLE;
+                    tryPlayGunSound("getCock");
                 } else {
+                    // Play reload sound on the first tick of the RELOADING state.
+                    if (prevState != State.RELOADING) {
+                        tryPlayGunSound("getReload");
+                    }
                     // Still reloading: retreat from the target if too close to avoid being shot.
                     double safeSq = currentProfile.safeDistance * currentProfile.safeDistance;
                     if (distSq < safeSq) {
@@ -406,6 +454,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
         }
+        prevState = state;
     }
 
     // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
@@ -1102,31 +1151,108 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     }
 
     /**
-     * Fires the held JEG gun via Minecraft's item-use mechanic.
+     * Fires the held JEG gun via {@code AIGunEvent.performGunAttack} (invoked reflectively
+     * through {@link JEGCompatManager#INSTANCE}).  After a successful shot, {@code AmmoCount}
+     * is decremented directly — {@link com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunSyncGoal}
+     * then detects the decrement and schedules the reload delay as usual.
      *
-     * <p>JEG guns fire when the entity "uses" the item: {@link net.minecraft.world.entity.LivingEntity#startUsingItem}
-     * begins the use action and {@link net.minecraft.world.entity.LivingEntity#releaseUsingItem} finishes it,
-     * which calls {@code GunItem.releaseUsing()} and causes JEG to spawn the projectile and decrement
-     * {@code AmmoCount} in the gun's NBT.
-     *
-     * <p>This method replaces the previously-expected JEG {@code GunAttackGoal} that was removed for
-     * recruit entities in Stage 1 of the JMTEG integration ({@link RecruitGoalOverrideHandler}).
-     * After this call, {@link com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunSyncGoal} detects the
-     * decrement in {@code AmmoCount} and handles the subsequent reload timer.
-     *
-     * <p>Safe when JEG is absent or the mob holds a non-gun item: any exception is silently swallowed
-     * so the recruit falls back to the COOLDOWN state without crashing.
+     * <p>Safe when JEG is absent or the mob holds a non-gun item: any exception is silently
+     * swallowed so the recruit falls back to the COOLDOWN state without crashing.
      */
     private void performFireAction() {
         try {
-            if (!isGunLoaded()) return; // do not attempt to fire an empty gun
-            // Simulate a "tap" right-click on the held gun: start then immediately release.
-            // JEG's GunItem.releaseUsing() fires the gun and decrements AmmoCount.
-            if (mob.isUsingItem()) mob.stopUsingItem();
-            mob.startUsingItem(InteractionHand.MAIN_HAND);
-            mob.releaseUsingItem();
-        } catch (Exception t) {
-            LOGGER.debug("performFireAction failed for {}: {}", mob, t.toString());
+            if (!isGunLoaded()) return;
+            ItemStack stack = mob.getMainHandItem();
+            if (stack.isEmpty()) return;
+            LivingEntity target = mob.getTarget();
+            if (target == null) return;
+            Object gunObj = getGunObject(stack);
+            JEGCompatManager.INSTANCE.performGunAttack(mob, target, stack, gunObj, 1.0f, false);
+            decrementAmmoCount(stack);
+        } catch (Exception e) {
+            LOGGER.debug("performFireAction failed for {}: {}", mob, e.toString());
+        }
+    }
+
+    // ── Phase-2 / Phase-3 helpers ─────────────────────────────────────────────
+
+    /**
+     * Returns the JEG {@code Gun} object for the given stack via
+     * {@code GunItem.getModifiedGun(ItemStack)}, or {@code null} on any failure.
+     */
+    private static Object getGunObject(ItemStack stack) {
+        try {
+            Item item = stack.getItem();
+            Class<?> gunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
+            if (!gunItemClass.isInstance(item)) return null;
+            Method getModifiedGun = gunItemClass.getMethod("getModifiedGun", ItemStack.class);
+            return getModifiedGun.invoke(item, stack);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Decrements the {@code AmmoCount} tag on the stack by one (if present and > 0).
+     * Guns with {@code IgnoreAmmo=true} are skipped.
+     */
+    private static void decrementAmmoCount(ItemStack stack) {
+        try {
+            CompoundTag tag = stack.getTag();
+            if (tag == null) return;
+            if (tag.contains("IgnoreAmmo", 1) && tag.getBoolean("IgnoreAmmo")) return;
+            if (tag.contains("AmmoCount", 99)) {
+                int count = tag.getInt("AmmoCount");
+                if (count > 0) tag.putInt("AmmoCount", count - 1);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Returns the burst-shot count from {@code gun.getGeneral().getRate()} reflectively.
+     * Falls back to 1 (single shot) on any failure.
+     */
+    private static int getGunBurstCount(ItemStack stack) {
+        try {
+            Object gunObj = getGunObject(stack);
+            if (gunObj == null) return 1;
+            Method getGeneral = gunObj.getClass().getMethod("getGeneral");
+            Object general = getGeneral.invoke(gunObj);
+            if (general == null) return 1;
+            Method getRate = general.getClass().getMethod("getRate");
+            Object val = getRate.invoke(general);
+            if (val instanceof Number) return Math.max(1, ((Number) val).intValue());
+        } catch (Throwable ignored) {
+        }
+        return 1;
+    }
+
+    /**
+     * Plays a sound from the held gun's {@code Sounds} object.
+     * The sound is looked up via {@code gun.getSounds().&lt;soundGetterName&gt;()} reflectively,
+     * so no direct JEG import is required. Silent on any failure or when JEG is absent.
+     *
+     * @param soundGetterName name of the no-arg getter on JEG's {@code Sounds} class,
+     *                        e.g. {@code "getReload"} or {@code "getCock"}.
+     */
+    private void tryPlayGunSound(String soundGetterName) {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack.isEmpty()) return;
+            Object gunObj = getGunObject(stack);
+            if (gunObj == null) return;
+            Method getSounds = gunObj.getClass().getMethod("getSounds");
+            Object soundsObj = getSounds.invoke(gunObj);
+            if (soundsObj == null) return;
+            Method getter = soundsObj.getClass().getMethod(soundGetterName);
+            Object result = getter.invoke(soundsObj);
+            if (result instanceof SoundEvent se) {
+                mob.level().playSound(null,
+                        mob.getX(), mob.getY(), mob.getZ(),
+                        se, SoundSource.HOSTILE, 1.0f, 1.0f);
+            }
+        } catch (Throwable ignored) {
         }
     }
 }
