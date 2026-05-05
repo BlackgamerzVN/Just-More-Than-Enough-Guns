@@ -156,6 +156,9 @@ public final class RecruitDoctrineHolder {
                     }
                 }
             } catch (Exception ignored) {}
+        }
+        return null;
+    }
 
     // ── Shift-right-click interaction ─────────────────────────────────────────
 
