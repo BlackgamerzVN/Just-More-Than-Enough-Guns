@@ -61,10 +61,21 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /** Last detected gun role (null = unknown / not in any pool). */
     private RecruitGunRole cachedRole = null;
-    /** Movement/positioning profile derived from {@link #cachedRole}. */
+    /** Movement/positioning profile derived from {@link #cachedRole} and {@link #currentDoctrine}. */
     private RecruitRoleProfile currentProfile = RecruitRoleProfile.forRole(null);
     /** Counts down from ROLE_CACHE_INTERVAL; profile is refreshed when it reaches 0. */
     private int roleCacheTick = 0;
+
+    // ── Doctrine cache ────────────────────────────────────────────────────────
+    // Refreshed on the same cadence as the role profile so doctrine changes are
+    // picked up within ROLE_CACHE_INTERVAL ticks without per-tick NBT reads.
+
+    /**
+     * Active doctrine for this recruit, or {@code null} if none is set.
+     * Refreshed via {@link RecruitDoctrineHolder#getDoctrine(PathfinderMob)} every
+     * {@link #ROLE_CACHE_INTERVAL} ticks.
+     */
+    private RecruitDoctrine currentDoctrine = null;
 
     // ── Tuning: aim / cooldown timing ─────────────────────────────────────────
     private static final int MIN_AIM_TICKS = 5;
@@ -171,9 +182,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         cooldownTimer = 0;
         strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
-        // Force profile re-detection on next tick so the goal starts with current gun info
+        // Force profile and doctrine re-detection on next tick so the goal starts with current info
         roleCacheTick = 0;
         cachedRole = null;
+        currentDoctrine = null;
         currentProfile = RecruitRoleProfile.forRole(null);
     }
 
@@ -195,11 +207,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (roleCacheTick <= 0) {
             roleCacheTick = ROLE_CACHE_INTERVAL;
             RecruitGunRole detectedRole = detectHeldGunRole();
-            if (detectedRole != cachedRole) {
-                cachedRole = detectedRole;
-                currentProfile = RecruitRoleProfile.forRole(cachedRole);
-                LOGGER.debug("{} switched to role profile {} (role={})",
-                        mob, currentProfile, cachedRole);
+            RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getDoctrine(mob);
+            if (detectedRole != cachedRole || detectedDoctrine != currentDoctrine) {
+                cachedRole      = detectedRole;
+                currentDoctrine = detectedDoctrine;
+                currentProfile  = RecruitRoleProfile.forRole(cachedRole).applyDoctrine(currentDoctrine);
+                LOGGER.debug("{} switched to role profile {} (role={}, doctrine={})",
+                        mob, currentProfile, cachedRole,
+                        currentDoctrine != null ? currentDoctrine.name() : "none");
             }
             // Re-score nearby enemies on the same cadence as the profile refresh so the
             // recruit shifts to a tactically appropriate target without per-tick scanning.
@@ -327,21 +342,24 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     }
 
     // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
-    // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier.
+    // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier,
+    // and further scaled by the doctrine's ammoConservation factor (>1 = more careful, conserves ammo).
     private int computeAimTicks(double distance) {
         double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
-        double weight  = getHeldGunWeight();
-        double penalty = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
-        return (int) Math.round(base * penalty);
+        double weight   = getHeldGunWeight();
+        double penalty  = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
+        return (int) Math.round(base * penalty * conserve);
     }
 
     private int computeCooldownTicks(double distance) {
         double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
-        double weight  = getHeldGunWeight();
-        double penalty = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
-        return (int) Math.round(base * penalty);
+        double weight   = getHeldGunWeight();
+        double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
+        return (int) Math.round(base * penalty * conserve);
     }
 
     private static double clamp(double v, double a, double b) {

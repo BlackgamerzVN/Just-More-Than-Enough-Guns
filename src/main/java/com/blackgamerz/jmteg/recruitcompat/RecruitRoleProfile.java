@@ -200,4 +200,50 @@ public final class RecruitRoleProfile {
             case UTILITY         -> UTILITY;
         };
     }
+
+    // ── Doctrine modifier ─────────────────────────────────────────────────────
+
+    /**
+     * Returns a new {@link RecruitRoleProfile} with all multipliers from the given
+     * {@link RecruitDoctrine} applied on top of this profile's values.
+     *
+     * <p>The following fields are scaled:
+     * <ul>
+     *   <li>{@link #preferredRange}  × {@code doctrine.rangeMultiplier}</li>
+     *   <li>{@link #safeDistance}    × {@code doctrine.rangeMultiplier}</li>
+     *   <li>{@link #retreatExtra}    × {@code doctrine.retreatMultiplier}</li>
+     *   <li>{@link #approachSpeed}   × {@code doctrine.approachSpeedMult}</li>
+     *   <li>{@link #retreatSpeed}    × {@code doctrine.retreatMultiplier}</li>
+     * </ul>
+     *
+     * <p>The following fields are intentionally left unchanged because they
+     * are controlled by the gun role and should not be overridden by doctrine:
+     * {@link #safeExitBuffer}, {@link #strafeSpeed}, {@link #strafeDistance},
+     * {@link #strafeChangeTicks}, {@link #strafeEnabled}.
+     *
+     * <p>Aim-ticks and cooldown-ticks are scaled separately inside
+     * {@link RecruitRangedGunnerAttackGoal} using
+     * {@code doctrine.ammoConservation} so that the timing logic stays in one
+     * place.
+     *
+     * @param doctrine the doctrine to apply; returns {@code this} unchanged when
+     *                 {@code null}
+     * @return a new profile with doctrine modifiers applied, or {@code this} when
+     *         {@code doctrine} is {@code null}
+     */
+    public RecruitRoleProfile applyDoctrine(RecruitDoctrine doctrine) {
+        if (doctrine == null) return this;
+        return new RecruitRoleProfile(
+                preferredRange    * doctrine.rangeMultiplier,
+                safeDistance      * doctrine.rangeMultiplier,
+                safeExitBuffer,                              // hysteresis: not scaled by doctrine
+                retreatExtra      * doctrine.retreatMultiplier,
+                approachSpeed     * doctrine.approachSpeedMult,
+                retreatSpeed      * doctrine.retreatMultiplier,
+                strafeSpeed,                                 // strafe speed: not scaled by doctrine
+                strafeDistance,                              // strafe distance: not scaled by doctrine
+                strafeChangeTicks,                           // strafe timing: not scaled by doctrine
+                strafeEnabled
+        );
+    }
 }
