@@ -164,7 +164,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int burstShotsRemaining = 0;
     /** Ticks until the next burst shot fires; only relevant when burstShotsRemaining > 0. */
     private int burstTimer = 0;
-    private static final int DEFAULT_BURST_DELAY_TICKS = 2;
+    private static final int DEFAULT_BURST_DELAY_TICKS = 2; // ~100ms between burst shots; fast enough to feel automatic but slow enough to be distinct
 
     // ── State-transition tracking for reload sounds ───────────────────────────
     private State prevState = State.IDLE;
@@ -1230,7 +1230,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /**
      * Plays a sound from the held gun's {@code Sounds} object.
-     * The sound is looked up via {@code gun.getSounds().&lt;soundGetterName&gt;()} reflectively,
+     * The sound is looked up via {@code gun.getSounds().soundGetterName()} reflectively,
      * so no direct JEG import is required. Silent on any failure or when JEG is absent.
      *
      * @param soundGetterName name of the no-arg getter on JEG's {@code Sounds} class,
