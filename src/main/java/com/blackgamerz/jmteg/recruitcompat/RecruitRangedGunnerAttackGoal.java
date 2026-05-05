@@ -55,7 +55,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private final PathfinderMob mob;
 
-    private enum State { IDLE, SEEK, AIM, COOLDOWN, RELOADING }
+    private enum State { IDLE, SEEK, AIM, COOLDOWN }
     private State state = State.IDLE;
 
     // ── Role-profile cache ────────────────────────────────────────────────────
@@ -251,16 +251,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         double effectiveRange   = getEffectiveAttackRange();
         double effectiveRangeSq = effectiveRange * effectiveRange;
 
-        // ── Reload check ─────────────────────────────────────────────────────────
-        // If the gun is out of ammo and we are not already waiting for it to reload,
-        // enter the RELOADING state so the recruit stops trying to aim or fire.
-        // The watcher (MobAiInjector) and GunSyncGoal fill ammo after the configured
-        // delay; this state simply waits until ammo is available again.
-        if (!isGunLoaded() && state != State.RELOADING && state != State.IDLE) {
-            disableAdsOnHeldGun();
-            state = State.RELOADING;
-        }
-
         switch (state) {
             case IDLE -> {
                 if (distSq > effectiveRangeSq) {
@@ -359,41 +349,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             case COOLDOWN -> {
                 cooldownTimer--;
                 if (cooldownTimer <= 0) {
-                    // Check if we need to reload before re-entering AIM.
-                    if (!isGunLoaded()) {
-                        state = State.RELOADING;
-                    } else {
-                        state = State.AIM;
-                        aimTimer = computeAimTicks(dist);
-                        enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
-                    }
-                }
-            }
-            case RELOADING -> {
-                // Wait for the watcher / GunSyncGoal to fill the gun after the configured delay.
-                if (isGunLoaded()) {
-                    // Ammo available again — reset to IDLE so the normal seek/aim cycle restarts.
-                    state = State.IDLE;
-                } else {
-                    // Still reloading: retreat from the target if too close to avoid being shot.
-                    double safeSq = currentProfile.safeDistance * currentProfile.safeDistance;
-                    if (distSq < safeSq) {
-                        double dx = mob.getX() - target.getX();
-                        double dz = mob.getZ() - target.getZ();
-                        double horiz = Math.sqrt(dx * dx + dz * dz);
-                        if (horiz < 1e-6) {
-                            double angle = mob.getRandom().nextDouble() * Math.PI * 2.0;
-                            dx = Math.cos(angle);
-                            dz = Math.sin(angle);
-                            horiz = 1.0;
-                        }
-                        double desiredDistance = currentProfile.safeDistance + currentProfile.retreatExtra;
-                        double nx = target.getX() + (dx / horiz) * desiredDistance;
-                        double nz = target.getZ() + (dz / horiz) * desiredDistance;
-                        mob.getNavigation().moveTo(nx, mob.getY(), nz, currentProfile.retreatSpeed);
-                    } else {
-                        mob.getNavigation().stop();
-                    }
+                    state = State.AIM;
+                    aimTimer = computeAimTicks(dist);
+                    enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
                 }
             }
         }
@@ -1050,23 +1008,5 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
         mob.spawnAtLocation(shield);
         LOGGER.debug("Dropped shield from two-handed-gun recruit {}", mob);
-    }
-
-    /**
-     * Returns {@code true} when the held gun has ammo available for the next shot.
-     * Guns with {@code IgnoreAmmo=true} are treated as always loaded.
-     * Returns {@code true} on any error so the recruit does not freeze when data is missing.
-     */
-    private boolean isGunLoaded() {
-        try {
-            ItemStack stack = mob.getMainHandItem();
-            if (stack == null || stack.isEmpty()) return false;
-            CompoundTag tag = stack.getTag();
-            if (tag == null) return false;
-            if (tag.contains("IgnoreAmmo", 1) && tag.getBoolean("IgnoreAmmo")) return true;
-            return tag.contains("AmmoCount", 99) && tag.getInt("AmmoCount") > 0;
-        } catch (Throwable t) {
-            return true; // safe default: assume loaded so the recruit does not freeze
-        }
     }
 }

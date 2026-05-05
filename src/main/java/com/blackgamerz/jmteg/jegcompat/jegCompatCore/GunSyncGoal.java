@@ -79,45 +79,14 @@ public class GunSyncGoal extends Goal {
                 // Pool + inventory lacked enough ammo: lower the magazine to what we could consume
                 tag.putInt("AmmoCount", prevAmmoCount + totalConsumed);
                 cur = prevAmmoCount + totalConsumed;
+            } else {
+                // We consumed the full delta (either from inv, pool or both) — keep the increased magazine
+                // cur already contains the new magazine value
             }
-            // Clear any pending reload timer since ammo just increased externally.
-            tag.remove("jmteg_reload_at");
         }
 
-        // Case B: weapon is empty (or low) -> attempt to reload using mob pool.
-        // A reload-delay timer ("jmteg_reload_at") prevents instant refill so the
-        // NPC experiences the same reload duration as a player using the same gun.
+        // Case B: weapon is empty (or low) -> attempt to reload using mob pool
         if (cur <= 0) {
-            long gameTime = mob.level().getGameTime();
-
-            if (!tag.contains("jmteg_reload_at")) {
-                // Gun just ran dry — start the reload timer.
-                int delay = config.reloadTimeTicks;
-                if (delay <= 0) {
-                    // Try JEG reflection as a last resort.
-                    try {
-                        int reflectedTime = com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat.getJegGunReloadTime(stack);
-                        if (reflectedTime > 0) delay = reflectedTime;
-                    } catch (Throwable ignored) {}
-                }
-                if (delay > 0) {
-                    tag.putLong("jmteg_reload_at", gameTime + delay);
-                    prevAmmoCount = cur;
-                    return; // wait — do not fill ammo yet
-                }
-                // delay == 0: instant reload (legacy behaviour)
-            } else {
-                long readyAt = tag.getLong("jmteg_reload_at");
-                if (gameTime < readyAt) {
-                    // Reload still in progress — don't fill yet.
-                    prevAmmoCount = cur;
-                    return;
-                }
-                // Timer has expired — clear it and proceed with the actual fill.
-                tag.remove("jmteg_reload_at");
-            }
-
-            // ── Actual ammo fill ──
             if (config.reloadKind == GunConfig.ReloadKind.SINGLE_ITEM) {
                 // consume 1 reload item to fill to max
                 int consumed = MobAmmoHelper.consumeAmmo(mob, config.poolId, 1);
@@ -132,11 +101,6 @@ public class GunSyncGoal extends Goal {
                     tag.putInt("AmmoCount", cur + consumed);
                     cur = cur + consumed;
                 }
-            }
-        } else {
-            // Ammo is available — clear any stale reload timer.
-            if (tag.contains("jmteg_reload_at")) {
-                tag.remove("jmteg_reload_at");
             }
         }
 

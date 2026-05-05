@@ -37,12 +37,6 @@ public final class GunConfigManager {
         int maxAmmo;
         String reloadKind;
         String pool;
-        /**
-         * Optional reload duration in ticks used when JEG reflection cannot supply the
-         * gun's actual reload time.  0 = instant (legacy).  Typical values: pistols 25,
-         * rifles 40, heavy 60+.
-         */
-        int reloadTimeTicks;
     }
 
     /**
@@ -87,7 +81,7 @@ public final class GunConfigManager {
                         } catch (Exception ex) {
                             kind = GunConfig.ReloadKind.PROJECTILE_OR_MAG;
                         }
-                        GUN_CONFIGS.put(itemId, new GunConfig(itemId, e.maxAmmo, kind, poolId, e.reloadTimeTicks));
+                        GUN_CONFIGS.put(itemId, new GunConfig(itemId, e.maxAmmo, kind, poolId));
                     }
                 }
             } catch (IOException ex) {
@@ -104,87 +98,81 @@ public final class GunConfigManager {
 
     // Returns the default JSON list (this will be written on first run if no file exists).
     // This list is derived from JEG's src/main/java/.../datagen/GunGen.java and ModItems registrations.
-    // reloadTimeTicks is used as a fallback when JEG reflection cannot supply the actual value.
-    // Typical JEG reload durations (ticks): pistols/SMG ~25, shotguns ~30, rifles ~40,
-    // bolt-action ~50, heavy/launcher ~60, flamethrower ~80.
     private static List<RawEntry> defaultList() {
         List<RawEntry> list = new ArrayList<>();
-        add(list, "jeg:abstract_gun",         30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",        40);
-        add(list, "jeg:finger_gun",            1, "PROJECTILE_OR_MAG", "minecraft:air",          0);
+        add(list, "jeg:abstract_gun", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
+        add(list, "jeg:finger_gun", 1, "PROJECTILE_OR_MAG", "minecraft:air");
 
-        add(list, "jeg:revolver",              8, "PROJECTILE_OR_MAG", "jeg:pistol_ammo",        30);
-        add(list, "jeg:waterpipe_shotgun",     1, "PROJECTILE_OR_MAG", "jeg:handmade_shell",     30);
-        add(list, "jeg:custom_smg",           24, "PROJECTILE_OR_MAG", "jeg:pistol_ammo",        25);
-        add(list, "jeg:double_barrel_shotgun", 2, "PROJECTILE_OR_MAG", "jeg:handmade_shell",     30);
+        add(list, "jeg:revolver", 8, "PROJECTILE_OR_MAG", "jeg:pistol_ammo");
+        add(list, "jeg:waterpipe_shotgun", 1, "PROJECTILE_OR_MAG", "jeg:handmade_shell");
+        add(list, "jeg:custom_smg", 24, "PROJECTILE_OR_MAG", "jeg:pistol_ammo");
+        add(list, "jeg:double_barrel_shotgun", 2, "PROJECTILE_OR_MAG", "jeg:handmade_shell");
 
-        add(list, "jeg:semi_auto_pistol",     10, "PROJECTILE_OR_MAG", "jeg:pistol_ammo",        25);
-        add(list, "jeg:semi_auto_rifle",      16, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         40);
+        add(list, "jeg:semi_auto_pistol", 10, "PROJECTILE_OR_MAG", "jeg:pistol_ammo");
+        add(list, "jeg:semi_auto_rifle", 16, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
 
-        add(list, "jeg:assault_rifle",        30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         40);
-        add(list, "jeg:pump_shotgun",          6, "PROJECTILE_OR_MAG", "jeg:shotgun_shell",      30);
+        add(list, "jeg:assault_rifle", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
+        add(list, "jeg:pump_shotgun", 6, "PROJECTILE_OR_MAG", "jeg:shotgun_shell");
 
-        add(list, "jeg:combat_pistol",        15, "PROJECTILE_OR_MAG", "jeg:pistol_ammo",        25);
-        add(list, "jeg:burst_rifle",          30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         40);
-        add(list, "jeg:combat_rifle",         30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         40);
+        add(list, "jeg:combat_pistol", 15, "PROJECTILE_OR_MAG", "jeg:pistol_ammo");
+        add(list, "jeg:burst_rifle", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
+        add(list, "jeg:combat_rifle", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
 
-        add(list, "jeg:bolt_action_rifle",     4, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         50);
-        add(list, "jeg:flare_gun",             1, "PROJECTILE_OR_MAG", "jeg:flare",              25);
+        add(list, "jeg:bolt_action_rifle", 4, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
+        add(list, "jeg:flare_gun", 1, "PROJECTILE_OR_MAG", "jeg:flare");
 
-        add(list, "jeg:blossom_rifle",        30, "PROJECTILE_OR_MAG", "jeg:spectre_round",      40);
-        add(list, "jeg:holy_shotgun",          8, "PROJECTILE_OR_MAG", "jeg:spectre_round",      35);
+        add(list, "jeg:blossom_rifle", 30, "PROJECTILE_OR_MAG", "jeg:spectre_round");
+        add(list, "jeg:holy_shotgun", 8, "PROJECTILE_OR_MAG", "jeg:spectre_round");
 
-        add(list, "jeg:atlantean_spear",       6, "PROJECTILE_OR_MAG", "jeg:water_bomb",         35);
-        add(list, "jeg:typhoonee",             8, "SINGLE_ITEM",       "minecraft:water_bucket", 60);
+        add(list, "jeg:atlantean_spear", 6, "PROJECTILE_OR_MAG", "jeg:water_bomb");
+        add(list, "jeg:typhoonee", 8, "SINGLE_ITEM", "minecraft:water_bucket");
 
-        add(list, "jeg:repeating_shotgun",     8, "PROJECTILE_OR_MAG", "jeg:shotgun_shell",      35);
-        add(list, "jeg:infantry_rifle",        8, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         45);
-        add(list, "jeg:service_rifle",        30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         40);
+        add(list, "jeg:repeating_shotgun", 8, "PROJECTILE_OR_MAG", "jeg:shotgun_shell");
+        add(list, "jeg:infantry_rifle", 8, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
+        add(list, "jeg:service_rifle", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
 
-        add(list, "jeg:hollenfire_mk2",       40, "PROJECTILE_OR_MAG", "jeg:blaze_round",        50);
-        add(list, "jeg:soulhunter_mk2",       30, "PROJECTILE_OR_MAG", "jeg:blaze_round",        45);
+        add(list, "jeg:hollenfire_mk2", 40, "PROJECTILE_OR_MAG", "jeg:blaze_round");
+        add(list, "jeg:soulhunter_mk2", 30, "PROJECTILE_OR_MAG", "jeg:blaze_round");
 
-        add(list, "jeg:subsonic_rifle",       20, "PROJECTILE_OR_MAG", "minecraft:echo_shard",   45);
-        add(list, "jeg:supersonic_shotgun",    6, "PROJECTILE_OR_MAG", "minecraft:echo_shard",   35);
+        add(list, "jeg:subsonic_rifle", 20, "PROJECTILE_OR_MAG", "minecraft:echo_shard");
+        add(list, "jeg:supersonic_shotgun", 6, "PROJECTILE_OR_MAG", "minecraft:echo_shard");
 
-        add(list, "jeg:hypersonic_cannon",    15, "SINGLE_ITEM",       "minecraft:sculk_catalyst", 60);
-        add(list, "jeg:rocket_launcher",       1, "PROJECTILE_OR_MAG", "jeg:rocket",             60);
+        add(list, "jeg:hypersonic_cannon", 15, "SINGLE_ITEM", "minecraft:sculk_catalyst");
+        add(list, "jeg:rocket_launcher", 1, "PROJECTILE_OR_MAG", "jeg:rocket");
 
-        add(list, "jeg:compound_bow",          1, "PROJECTILE_OR_MAG", "minecraft:arrow",        25);
-        add(list, "jeg:primitive_bow",         1, "PROJECTILE_OR_MAG", "minecraft:arrow",        25);
+        add(list, "jeg:compound_bow", 1, "PROJECTILE_OR_MAG", "minecraft:arrow");
+        add(list, "jeg:primitive_bow", 1, "PROJECTILE_OR_MAG", "minecraft:arrow");
 
-        add(list, "jeg:grenade_launcher",      1, "PROJECTILE_OR_MAG", "jeg:grenade",            55);
-        add(list, "jeg:light_machine_gun",   100, "PROJECTILE_OR_MAG", "jeg:rifle_ammo",         60);
+        add(list, "jeg:grenade_launcher", 1, "PROJECTILE_OR_MAG", "jeg:grenade");
+        add(list, "jeg:light_machine_gun", 100, "PROJECTILE_OR_MAG", "jeg:rifle_ammo");
 
-        add(list, "jeg:flamethrower",        200, "SINGLE_ITEM",       "minecraft:lava_bucket",  80);
-        add(list, "jeg:minigun",               1, "PROJECTILE_OR_MAG", "jeg:pistol_ammo",        60);
+        add(list, "jeg:flamethrower", 200, "SINGLE_ITEM", "minecraft:lava_bucket");
+        add(list, "jeg:minigun", 1, "PROJECTILE_OR_MAG", "jeg:pistol_ammo");
+
+        // Additional entries present in GunGen that are occasionally registered:
+        add(list, "jeg:repeating_shotgun", 8, "PROJECTILE_OR_MAG", "jeg:shotgun_shell"); // duplicate tolerated
+        add(list, "jeg:burst_rifle", 30, "PROJECTILE_OR_MAG", "jeg:rifle_ammo"); // duplicate tolerated
 
         return list;
     }
 
-    private static void add(List<RawEntry> list, String item, int maxAmmo, String kind,
-                             String pool, int reloadTimeTicks) {
+    private static void add(List<RawEntry> list, String item, int maxAmmo, String kind, String pool) {
         RawEntry e = new RawEntry();
         e.item = item;
         e.maxAmmo = maxAmmo;
         e.reloadKind = kind;
         e.pool = pool;
-        e.reloadTimeTicks = reloadTimeTicks;
         list.add(e);
-    }
-
-    /** Legacy overload kept for call-sites that don't specify a reload time. */
-    private static void add(List<RawEntry> list, String item, int maxAmmo, String kind, String pool) {
-        add(list, item, maxAmmo, kind, pool, 0);
     }
 
     private static List<GunConfig> fallbackDefaults() {
         List<GunConfig> list = new ArrayList<>();
         ResourceLocation bolt = ResourceLocation.tryParse("jeg:bolt_action_rifle");
         ResourceLocation rifleAmmo = ResourceLocation.tryParse("jeg:rifle_ammo");
-        if (bolt != null && rifleAmmo != null) list.add(new GunConfig(bolt, 4, GunConfig.ReloadKind.PROJECTILE_OR_MAG, rifleAmmo, 50));
+        if (bolt != null && rifleAmmo != null) list.add(new GunConfig(bolt, 4, GunConfig.ReloadKind.PROJECTILE_OR_MAG, rifleAmmo));
         ResourceLocation semi = ResourceLocation.tryParse("jeg:semi_auto_pistol");
         ResourceLocation pistolAmmo = ResourceLocation.tryParse("jeg:pistol_ammo");
-        if (semi != null && pistolAmmo != null) list.add(new GunConfig(semi, 10, GunConfig.ReloadKind.PROJECTILE_OR_MAG, pistolAmmo, 25));
+        if (semi != null && pistolAmmo != null) list.add(new GunConfig(semi, 10, GunConfig.ReloadKind.PROJECTILE_OR_MAG, pistolAmmo));
         return list;
     }
 }

@@ -81,20 +81,17 @@ public final class MobAiInjector {
         ResourceLocation poolId = null;
         int maxAmmo = 0;
         GunConfig.ReloadKind reloadKind = null;
-        int reloadTimeTicks = 0;
 
         GunConfig cfg = itemKey == null ? null : GunConfigManager.GUN_CONFIGS.get(itemKey);
         if (cfg != null) {
             poolId = cfg.poolId;
             maxAmmo = cfg.maxAmmo;
             reloadKind = cfg.reloadKind;
-            reloadTimeTicks = cfg.reloadTimeTicks;
         } else if (detected.isPresent()) {
             DetectedGun d = detected.get();
             poolId = d.poolId;
             maxAmmo = d.maxAmmo;
             reloadKind = d.kind;
-            reloadTimeTicks = d.reloadTimeTicks;
             LOG.debug("Dynamic JEG detection (join): {} => pool {}, maxAmmo {}", itemKey, poolId, maxAmmo);
         }
 
@@ -127,7 +124,7 @@ public final class MobAiInjector {
         }
 
         // attach GunSyncGoal (pass a minimal GunConfig if needed)
-        mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId, reloadTimeTicks)));
+        mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
 
         if (event.getLevel() instanceof ServerLevel serverLevel) {
             UUID id = mob.getUUID();
@@ -166,20 +163,17 @@ public final class MobAiInjector {
                                 ResourceLocation poolId = null;
                                 int maxAmmo = 0;
                                 GunConfig.ReloadKind reloadKind = null;
-                                int reloadTimeTicks = 0;
 
                                 GunConfig cfg = itemKey == null ? null : GunConfigManager.GUN_CONFIGS.get(itemKey);
                                 if (cfg != null) {
                                     poolId = cfg.poolId;
                                     maxAmmo = cfg.maxAmmo;
                                     reloadKind = cfg.reloadKind;
-                                    reloadTimeTicks = cfg.reloadTimeTicks;
                                 } else if (detected.isPresent()) {
                                     DetectedGun d = detected.get();
                                     poolId = d.poolId;
                                     maxAmmo = d.maxAmmo;
                                     reloadKind = d.kind;
-                                    reloadTimeTicks = d.reloadTimeTicks;
                                 }
 
                                 if (poolId != null) {
@@ -204,7 +198,7 @@ public final class MobAiInjector {
                                             mob.addTag(SEEDED_TAG);
                                         }
                                     }
-                                    mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId, reloadTimeTicks)));
+                                    mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
                                 }
                             }
                         }
@@ -248,20 +242,17 @@ public final class MobAiInjector {
                 ResourceLocation poolId = null;
                 int maxAmmo = 0;
                 GunConfig.ReloadKind reloadKind = null;
-                int reloadTimeTicks = 0;
 
                 GunConfig cfg = itemKey == null ? null : GunConfigManager.GUN_CONFIGS.get(itemKey);
                 if (cfg != null) {
                     poolId = cfg.poolId;
                     maxAmmo = cfg.maxAmmo;
                     reloadKind = cfg.reloadKind;
-                    reloadTimeTicks = cfg.reloadTimeTicks;
                 } else if (detected.isPresent()) {
                     DetectedGun d = detected.get();
                     poolId = d.poolId;
                     maxAmmo = d.maxAmmo;
                     reloadKind = d.kind;
-                    reloadTimeTicks = d.reloadTimeTicks;
                 }
 
                 if (poolId == null) {
@@ -293,48 +284,10 @@ public final class MobAiInjector {
                         LOG.info("Watcher: mob {} external reload consumed {} (inv {} + pool {}), pool left {}",
                                 id, totalConsumed, consumedFromInv, consumedFromPool, MobAmmoHelper.getAmmoPool(mob, poolId));
                     }
-                    // Clear any pending reload timer since ammo was just refilled externally
-                    main.getOrCreateTag().remove("jmteg_reload_at");
                 }
 
-                // If empty, attempt to reload by consuming inventory first, then pool.
-                // A reload-delay timer ("jmteg_reload_at") prevents instant refill so the
-                // NPC experiences the same reload duration as a player using the same gun.
+                // If empty, attempt to reload by consuming inventory first, then pool
                 if (curAmmo <= 0) {
-                    CompoundTag stackTag = main.getOrCreateTag();
-                    long gameTime = level.getGameTime();
-
-                    if (!stackTag.contains("jmteg_reload_at")) {
-                        // Gun just ran dry — start the reload timer.
-                        // Priority: JEG reflection value > GunConfig fallback > instant (0).
-                        int delay = reloadTimeTicks;
-                        if (delay <= 0) {
-                            // Try one more time with JEG reflection directly on the stack.
-                            try {
-                                int reflectedTime = com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat.getJegGunReloadTime(main);
-                                if (reflectedTime > 0) delay = reflectedTime;
-                            } catch (Throwable ignored) {}
-                        }
-                        if (delay > 0) {
-                            stackTag.putLong("jmteg_reload_at", gameTime + delay);
-                            LOG.debug("Watcher: mob {} started reload timer ({} ticks)", id, delay);
-                            lastAmmoCounts.put(id, curAmmo);
-                            continue; // wait — do not fill ammo yet
-                        }
-                        // delay == 0: instant reload (legacy behaviour / IgnoreAmmo guns)
-                    } else {
-                        long readyAt = stackTag.getLong("jmteg_reload_at");
-                        if (gameTime < readyAt) {
-                            // Reload still in progress — don't fill yet.
-                            lastAmmoCounts.put(id, curAmmo);
-                            continue;
-                        }
-                        // Timer has expired — proceed with the actual ammo fill below.
-                        stackTag.remove("jmteg_reload_at");
-                        LOG.debug("Watcher: mob {} reload timer expired, filling ammo", id);
-                    }
-
-                    // ── Actual ammo fill (reached when timer is disabled or has expired) ──
                     if (reloadKind == GunConfig.ReloadKind.SINGLE_ITEM) {
                         int consumedInv = removeAmmoFromInventory(mob, poolId, 1);
                         if (consumedInv > 0) {
@@ -404,19 +357,16 @@ public final class MobAiInjector {
                                 ResourceLocation poolId = null;
                                 int maxAmmo = 0;
                                 GunConfig.ReloadKind reloadKind = null;
-                                int reloadTimeTicks = 0;
 
                                 if (cfg != null) {
                                     poolId = cfg.poolId;
                                     maxAmmo = cfg.maxAmmo;
                                     reloadKind = cfg.reloadKind;
-                                    reloadTimeTicks = cfg.reloadTimeTicks;
                                 } else if (detected2.isPresent()) {
                                     DetectedGun d = detected2.get();
                                     poolId = d.poolId;
                                     maxAmmo = d.maxAmmo;
                                     reloadKind = d.kind;
-                                    reloadTimeTicks = d.reloadTimeTicks;
                                 }
 
                                 if (poolId == null) continue;
@@ -453,7 +403,7 @@ public final class MobAiInjector {
                                     LOG.debug("Scanner: mob {} already seeded, skipping", id);
                                 }
 
-                                mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId, reloadTimeTicks)));
+                                mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
                                 watchedLevels.put(id, level);
                                 lastAmmoCounts.put(id, getAmmoCountFromStack(main));
                                 LOG.debug("Scanner: started watching mob {} holding {}", id, itemKey);
@@ -472,14 +422,11 @@ public final class MobAiInjector {
         final ResourceLocation poolId;
         final int maxAmmo;
         final GunConfig.ReloadKind kind;
-        /** JEG-reported reload duration in ticks; 0 = could not detect (use config fallback). */
-        final int reloadTimeTicks;
 
-        DetectedGun(ResourceLocation poolId, int maxAmmo, GunConfig.ReloadKind kind, int reloadTimeTicks) {
+        DetectedGun(ResourceLocation poolId, int maxAmmo, GunConfig.ReloadKind kind) {
             this.poolId = poolId;
             this.maxAmmo = maxAmmo;
             this.kind = kind;
-            this.reloadTimeTicks = reloadTimeTicks;
         }
     }
 
@@ -555,39 +502,8 @@ public final class MobAiInjector {
                 } catch (Throwable ignored) {}
             }
 
-            // Extract reload time so the watcher can delay ammo refill to match player reload.
-            int reloadTimeTicks = 0;
-            for (String methodName : new String[]{"getReloadTime", "getTime", "getReloadDuration"}) {
-                try {
-                    Method m = reloadsObj.getClass().getMethod(methodName);
-                    Object val = m.invoke(reloadsObj);
-                    if (val instanceof Number n && n.intValue() > 0) {
-                        reloadTimeTicks = n.intValue();
-                        break;
-                    }
-                } catch (NoSuchMethodException ignored) {}
-            }
-            // Fallback: getUseDuration(ItemStack) / getUseDuration(ItemStack, LivingEntity)
-            if (reloadTimeTicks <= 0) {
-                try {
-                    Method m = itemObj.getClass().getMethod("getUseDuration", ItemStack.class);
-                    Object val = m.invoke(itemObj, stack);
-                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < 72000)
-                        reloadTimeTicks = n.intValue();
-                } catch (NoSuchMethodException ignored) {}
-            }
-            if (reloadTimeTicks <= 0) {
-                try {
-                    Class<?> livingClass = Class.forName("net.minecraft.world.entity.LivingEntity");
-                    Method m = itemObj.getClass().getMethod("getUseDuration", ItemStack.class, livingClass);
-                    Object val = m.invoke(itemObj, stack, (Object) null);
-                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < 72000)
-                        reloadTimeTicks = n.intValue();
-                } catch (Throwable ignored) {}
-            }
-
             if (poolId == null) return Optional.empty();
-            return Optional.of(new DetectedGun(poolId, Math.max(0, maxAmmo), kind, reloadTimeTicks));
+            return Optional.of(new DetectedGun(poolId, Math.max(0, maxAmmo), kind));
         } catch (ClassNotFoundException cnf) {
             return Optional.empty();
         } catch (Throwable t) {
@@ -1114,10 +1030,9 @@ public final class MobAiInjector {
     }
 
     // Minimal helper to create GunConfig object used by your existing code
-    private static GunConfig makeGunConfig(ResourceLocation itemKey, int maxAmmo, GunConfig.ReloadKind kind,
-                                           ResourceLocation poolId, int reloadTimeTicks) {
+    private static GunConfig makeGunConfig(ResourceLocation itemKey, int maxAmmo, GunConfig.ReloadKind kind, ResourceLocation poolId) {
         if (itemKey == null) itemKey = ResourceLocation.tryParse("unknown:unknown");
-        return new GunConfig(itemKey, maxAmmo, kind, poolId, reloadTimeTicks);
+        return new GunConfig(itemKey, maxAmmo, kind, poolId);
     }
 
     // Scanner config manager (same as before)
