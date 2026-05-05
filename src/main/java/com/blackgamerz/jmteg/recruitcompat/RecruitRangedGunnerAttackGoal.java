@@ -1,10 +1,7 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
-import net.minecraft.core.particles.ParticleType;
-import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
@@ -397,9 +394,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     } else {
                         mob.getNavigation().stop();
                     }
-                    // Emit a reload-indicator bubble above the mob's head every tick while reloading,
-                    // mirroring JEG's GunAttackGoal "emote bubble" mechanic.
-                    sendReloadBubble();
                 }
             }
         }
@@ -1056,28 +1050,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
         mob.spawnAtLocation(shield);
         LOGGER.debug("Dropped shield from two-handed-gun recruit {}", mob);
-    }
-
-    /**
-     * Emits a {@code jeg:bubble_ammo} particle above the mob's head every tick while reloading,
-     * mirroring JEG's {@code GunAttackGoal} "emote bubble" mechanic so players can visually
-     * identify which recruit is currently reloading.
-     *
-     * <p>The particle type is looked up by registry key ({@code jeg:bubble_ammo}) so no direct
-     * JEG import is needed; the call is silently skipped when JEG is absent.
-     */
-    private void sendReloadBubble() {
-        if (!(mob.level() instanceof ServerLevel serverLevel)) return;
-        ResourceLocation bubbleAmmoLocation = new ResourceLocation("jeg", "bubble_ammo");
-        if (!BuiltInRegistries.PARTICLE_TYPE.containsKey(bubbleAmmoLocation)) return;
-        ParticleType<?> particleType = BuiltInRegistries.PARTICLE_TYPE.get(bubbleAmmoLocation);
-        if (particleType instanceof SimpleParticleType spt) {
-            serverLevel.sendParticles(spt,
-                    mob.getX(),
-                    mob.getY() + mob.getEyeHeight() + 0.9,
-                    mob.getZ(),
-                    1, 0.0, 0.0, 0.0, 0.0);
-        }
     }
 
     /**
