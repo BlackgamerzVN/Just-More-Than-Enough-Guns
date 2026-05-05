@@ -1,7 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
-import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -17,8 +16,6 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
-import java.lang.reflect.Method;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,17 +82,6 @@ public final class RecruitGoalOverrideHandler {
 
         ItemStack main = mob.getMainHandItem();
         boolean hasJegGun = main != null && !main.isEmpty() && JustEnoughGunsCompat.isJegGun(main);
-
-        // Stage 3: If the recruit is ammo-aware but has no JEG gun in the main hand yet,
-        // try to equip the best role-appropriate gun from the inventory.  The equipment-
-        // change event will re-fire evaluateAndApplyForMob once the item is equipped; we
-        // update hasJegGun inline so the current call already proceeds into goal injection.
-        if (!hasJegGun && RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) {
-            if (tryEquipBestRoleGun(mob)) {
-                main = mob.getMainHandItem();
-                hasJegGun = JustEnoughGunsCompat.isJegGun(main);
-            }
-        }
 
         if (hasJegGun) {
             // Proactively remove shield from two-handed (non-SIDEARM) recruits so it is
@@ -237,76 +223,6 @@ public final class RecruitGoalOverrideHandler {
         }
 
         if (!stored.isEmpty()) removedGoals.put(mob, stored);
-    }
-
-    /**
-     * Attempts to equip the best role-appropriate JEG gun from the recruit's inventory into
-     * the main hand.  Only called for ammo-aware recruits whose main hand currently holds
-     * no JEG gun.
-     *
-     * <p>Algorithm:
-     * <ol>
-     *   <li>Ask {@link RecruitGunSelector#selectBestGun} for the highest-weight gun in the
-     *       recruit's inventory (already handles both inventory slots and the equipped items).</li>
-     *   <li>If a non-empty result is returned and it is not already in the main hand, search
-     *       the inventory for the matching slot and perform the swap: move the current main-
-     *       hand item (if any) into that slot and equip the selected gun.</li>
-     * </ol>
-     *
-     * @return {@code true} if a gun was equipped (main hand was changed)
-     */
-    private static boolean tryEquipBestRoleGun(PathfinderMob mob) {
-        try {
-            ItemStack best = RecruitGunSelector.selectBestGun(mob);
-            if (best.isEmpty()) return false;
-
-            ItemStack currentMain = mob.getMainHandItem();
-            // Already equipped — nothing to do (handles the rare case where selectBestGun
-            // returns the main-hand item even though we expected it to be a non-JEG item)
-            if (!currentMain.isEmpty() && ItemStack.isSameItemSameTags(currentMain, best)) return false;
-
-            // Find the inventory slot that holds this stack so we can swap properly.
-            Object inv = ReflectionCache.tryGetInventoryObject(mob);
-            if (inv == null) {
-                // No inventory access – just equip directly and drop what was held
-                mob.setItemSlot(EquipmentSlot.MAINHAND, best.copy());
-                LOGGER.info("tryEquipBestRoleGun: equipped {} for {} (no inv access, previous item lost)",
-                        best.getItem().getDescriptionId(), mob);
-                return true;
-            }
-
-            Method getSize = inv.getClass().getMethod("getContainerSize");
-            Method getItem = inv.getClass().getMethod("getItem", int.class);
-            int size = (int) getSize.invoke(inv);
-
-            for (int i = 0; i < size; i++) {
-                ItemStack slot = (ItemStack) getItem.invoke(inv, i);
-                if (slot.isEmpty()) continue;
-                // Match by item + NBT so we correctly handle containers that return copies
-                if (!ItemStack.isSameItemSameTags(slot, best)) continue;
-
-                // Swap: put current main-hand item into the vacated slot, equip selected gun
-                ItemStack displaced = currentMain.isEmpty() ? ItemStack.EMPTY : currentMain.copy();
-                mob.setItemSlot(EquipmentSlot.MAINHAND, best.copy());
-                ReflectionCache.tryWriteBackInventoryItem(inv, i, displaced);
-                LOGGER.info("tryEquipBestRoleGun: equipped {} (role-best) for {} from slot {}",
-                        best.getItem().getDescriptionId(), mob, i);
-                return true;
-            }
-
-            // Stack not found in inventory — it may be the offhand or a stack that was
-            // already moved.  Only equip if it is actually a different item from the
-            // current main hand (by content) to avoid a no-op setItemSlot call.
-            if (!ItemStack.isSameItemSameTags(best, currentMain)) {
-                mob.setItemSlot(EquipmentSlot.MAINHAND, best.copy());
-                LOGGER.info("tryEquipBestRoleGun: equipped {} (no slot match) for {}",
-                        best.getItem().getDescriptionId(), mob);
-                return true;
-            }
-        } catch (Throwable t) {
-            LOGGER.debug("tryEquipBestRoleGun failed for {}", mob, t);
-        }
-        return false;
     }
 
     private static void restoreOriginalGoalsIfAny(PathfinderMob mob) {

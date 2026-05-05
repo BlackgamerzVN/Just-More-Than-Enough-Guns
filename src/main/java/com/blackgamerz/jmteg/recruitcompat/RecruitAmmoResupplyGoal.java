@@ -334,11 +334,6 @@ public class RecruitAmmoResupplyGoal extends Goal {
      * Scans the recruit's inventory for any loaded JEG gun and swaps it into
      * the main hand, storing the empty gun back in the vacated inventory slot.
      *
-     * <p>Unlike the original "first-available" approach, this version scores each
-     * candidate with the recruit's role-preference weight so the most suitable
-     * loaded gun is chosen rather than an arbitrary one.  Guns with the highest
-     * weight are preferred; when weights tie, earlier inventory slots win.</p>
-     *
      * <p>Triggers {@link EquipmentChangeHandler} automatically via
      * {@code mob.setItemSlot}, which in turn calls
      * {@link RecruitGoalOverrideHandler#forceReevaluate} to update goal state.
@@ -353,17 +348,7 @@ public class RecruitAmmoResupplyGoal extends Goal {
             Method getSize = inv.getClass().getMethod("getContainerSize");
             Method getItem = inv.getClass().getMethod("getItem", int.class);
 
-            // Build the tier config once for role-weight scoring
-            RecruitLoadoutConfigManager.ensureLoaded();
-            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
-            RecruitLoadoutConfigManager.RecruitTierConfig tier =
-                    RecruitLoadoutConfigManager.getTierConfig(classKey);
-
-            int    size       = (int) getSize.invoke(inv);
-            int    bestSlot   = -1;
-            double bestWeight = -1.0;
-            ItemStack bestCandidate = ItemStack.EMPTY;
-
+            int size = (int) getSize.invoke(inv);
             for (int i = 0; i < size; i++) {
                 ItemStack candidate = (ItemStack) getItem.invoke(inv, i);
                 if (candidate.isEmpty()) continue;
@@ -373,29 +358,13 @@ public class RecruitAmmoResupplyGoal extends Goal {
                 // Accept guns with ammo or with IgnoreAmmo flag (e.g. creative test guns)
                 if (!candidateGun.getIgnoreAmmo() && candidateGun.getAmmoCount() <= 0) continue;
 
-                // Score by role preference weight so the most appropriate backup is chosen
-                net.minecraft.resources.ResourceLocation id =
-                        net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(candidate.getItem());
-                double weight = (id != null)
-                        ? RecruitGunSelector.getRoleWeight(id, tier)
-                        : 0.0;
-
-                if (weight > bestWeight) {
-                    bestWeight    = weight;
-                    bestSlot      = i;
-                    bestCandidate = candidate;
-                }
+                // Swap: stash empty gun in the inventory slot, equip loaded gun
+                ItemStack emptyGun = mob.getMainHandItem().copy();
+                mob.setItemSlot(EquipmentSlot.MAINHAND, candidate.copy());
+                ReflectionCache.tryWriteBackInventoryItem(inv, i, emptyGun);
+                LOGGER.debug("{} switched to backup weapon from inventory slot {}", mob, i);
+                return true;
             }
-
-            if (bestSlot < 0) return false;
-
-            // Swap: stash empty gun in the inventory slot, equip role-best loaded gun
-            ItemStack emptyGun = mob.getMainHandItem().copy();
-            mob.setItemSlot(EquipmentSlot.MAINHAND, bestCandidate.copy());
-            ReflectionCache.tryWriteBackInventoryItem(inv, bestSlot, emptyGun);
-            LOGGER.debug("{} switched to role-best backup weapon {} (weight {}) from slot {}",
-                    mob, bestCandidate.getItem().getDescriptionId(), bestWeight, bestSlot);
-            return true;
         } catch (Throwable ignored) {}
         return false;
     }
