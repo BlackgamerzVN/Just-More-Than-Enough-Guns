@@ -26,8 +26,11 @@ import java.util.EnumSet;
 import java.util.List;
 
 /**
- * Movement/aim-only fallback for recruits holding JEG guns.
- * Shooting and reload are handled by the injected JEG GunAttackGoal (MobAiInjector).
+ * Full attack-AI replacement for recruits holding JEG guns.
+ * Handles movement, aiming, and firing independently; does NOT rely on JEG's
+ * {@code GunAttackGoal} (which is explicitly removed for recruit entities by
+ * {@link RecruitGoalOverrideHandler} in Stage 1 of the JMTEG integration).
+ * Reloading is coordinated via {@link com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunSyncGoal}.
  *
  * Enhancements included:
  * - Precise yaw/pitch application (instead of mob.lookAt)
@@ -352,9 +355,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
                 aimTimer--;
                 if (aimTimer <= 0) {
-                    // Exiting AIM — restore spread before letting the GunAttackGoal run
+                    // Exiting AIM — restore spread, then fire the gun and enter cooldown.
                     disableAdsOnHeldGun();
-                    // The injected JEG GunAttackGoal will perform the actual firing.
+                    performFireAction();
                     cooldownTimer = computeCooldownTicks(dist);
                     state = State.COOLDOWN;
                 }
@@ -1095,6 +1098,35 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             return tag.contains("AmmoCount", 99) && tag.getInt("AmmoCount") > 0;
         } catch (Throwable t) {
             return true; // safe default: assume loaded so the recruit does not freeze
+        }
+    }
+
+    /**
+     * Fires the held JEG gun via Minecraft's item-use mechanic.
+     *
+     * <p>JEG guns fire when the entity "uses" the item: {@link net.minecraft.world.entity.LivingEntity#startUsingItem}
+     * begins the use action and {@link net.minecraft.world.entity.LivingEntity#releaseUsingItem} finishes it,
+     * which calls {@code GunItem.releaseUsing()} and causes JEG to spawn the projectile and decrement
+     * {@code AmmoCount} in the gun's NBT.
+     *
+     * <p>This method replaces the previously-expected JEG {@code GunAttackGoal} that was removed for
+     * recruit entities in Stage 1 of the JMTEG integration ({@link RecruitGoalOverrideHandler}).
+     * After this call, {@link com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunSyncGoal} detects the
+     * decrement in {@code AmmoCount} and handles the subsequent reload timer.
+     *
+     * <p>Safe when JEG is absent or the mob holds a non-gun item: any exception is silently swallowed
+     * so the recruit falls back to the COOLDOWN state without crashing.
+     */
+    private void performFireAction() {
+        try {
+            if (!isGunLoaded()) return; // do not attempt to fire an empty gun
+            // Simulate a "tap" right-click on the held gun: start then immediately release.
+            // JEG's GunItem.releaseUsing() fires the gun and decrements AmmoCount.
+            if (mob.isUsingItem()) mob.stopUsingItem();
+            mob.startUsingItem(InteractionHand.MAIN_HAND);
+            mob.releaseUsingItem();
+        } catch (Throwable t) {
+            LOGGER.debug("performFireAction failed for {}: {}", mob, t.toString());
         }
     }
 }
