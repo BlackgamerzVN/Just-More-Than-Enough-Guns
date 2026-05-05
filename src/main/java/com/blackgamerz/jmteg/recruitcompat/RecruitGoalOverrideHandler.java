@@ -188,7 +188,7 @@ public final class RecruitGoalOverrideHandler {
         }
     }
 
-    /** Removes and caches competing vanilla attack goals (Recruits mod musket/crossbow goals). */
+    /** Removes and caches competing ranged attack goals (Recruits mod musket/crossbow goals and JEG's GunAttackGoal). */
     private static void removeAndStoreCompetingGoals(PathfinderMob mob) {
         List<RemovedGoal> stored = removedGoals.get(mob);
         if (stored == null) stored = Collections.synchronizedList(new ArrayList<>());
@@ -204,6 +204,7 @@ public final class RecruitGoalOverrideHandler {
                                 String name = goal.getClass().getName();
                                 if (name.equals("com.talhanation.recruits.entities.ai.compat.RecruitRangedMusketAttackGoal")
                                         || name.equals("com.talhanation.recruits.entities.ai.RecruitRangedCrossbowAttackGoal")
+                                        || name.equals("ttv.migami.jeg.entity.ai.GunAttackGoal")
                                         ) {
                                     int prio = wrap.getPriority();
                                     stored.add(new RemovedGoal(goal, prio));
