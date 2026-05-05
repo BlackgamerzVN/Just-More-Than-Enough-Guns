@@ -58,13 +58,6 @@ public final class MobAiInjector {
 
     private static final String SEEDED_TAG = "jmteg_ammo_seeded";
 
-    /**
-     * Upper bound on a valid JEG reload time (ticks).  72000 = 1 hour at 20 TPS — any
-     * value at or above this comes from the Minecraft default {@code Item.getUseDuration}
-     * implementation and does not represent a real gun reload duration.
-     */
-    private static final int MAX_VALID_RELOAD_TICKS = 72000;
-
     private MobAiInjector() {}
 
     @SubscribeEvent
@@ -313,17 +306,22 @@ public final class MobAiInjector {
 
                     if (!stackTag.contains("jmteg_reload_at")) {
                         // Gun just ran dry — start the reload timer.
-                        // Reload time comes from: GunConfig.reloadTimeTicks (for configured guns)
-                        // or DetectedGun.reloadTimeTicks (set by detectJegGunData via reflection).
-                        // If both are 0 the gun does not define a reload delay (instant reload).
+                        // Priority: JEG reflection value > GunConfig fallback > instant (0).
                         int delay = reloadTimeTicks;
+                        if (delay <= 0) {
+                            // Try one more time with JEG reflection directly on the stack.
+                            try {
+                                int reflectedTime = com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat.getJegGunReloadTime(main);
+                                if (reflectedTime > 0) delay = reflectedTime;
+                            } catch (Throwable ignored) {}
+                        }
                         if (delay > 0) {
                             stackTag.putLong("jmteg_reload_at", gameTime + delay);
                             LOG.debug("Watcher: mob {} started reload timer ({} ticks)", id, delay);
                             lastAmmoCounts.put(id, curAmmo);
                             continue; // wait — do not fill ammo yet
                         }
-                        // delay == 0: instant reload (legacy behaviour / no reload time configured)
+                        // delay == 0: instant reload (legacy behaviour / IgnoreAmmo guns)
                     } else {
                         long readyAt = stackTag.getLong("jmteg_reload_at");
                         if (gameTime < readyAt) {
@@ -574,7 +572,7 @@ public final class MobAiInjector {
                 try {
                     Method m = itemObj.getClass().getMethod("getUseDuration", ItemStack.class);
                     Object val = m.invoke(itemObj, stack);
-                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < MAX_VALID_RELOAD_TICKS)
+                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < 72000)
                         reloadTimeTicks = n.intValue();
                 } catch (NoSuchMethodException ignored) {}
             }
@@ -583,7 +581,7 @@ public final class MobAiInjector {
                     Class<?> livingClass = Class.forName("net.minecraft.world.entity.LivingEntity");
                     Method m = itemObj.getClass().getMethod("getUseDuration", ItemStack.class, livingClass);
                     Object val = m.invoke(itemObj, stack, (Object) null);
-                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < MAX_VALID_RELOAD_TICKS)
+                    if (val instanceof Number n && n.intValue() > 0 && n.intValue() < 72000)
                         reloadTimeTicks = n.intValue();
                 } catch (Throwable ignored) {}
             }

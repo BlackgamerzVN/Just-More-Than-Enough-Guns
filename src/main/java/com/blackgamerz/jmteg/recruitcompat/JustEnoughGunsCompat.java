@@ -29,13 +29,6 @@ public final class JustEnoughGunsCompat {
 
     private JustEnoughGunsCompat() {}
 
-    /**
-     * Upper bound on a valid JEG reload time (ticks).  72000 = 1 hour at 20 TPS — any
-     * value at or above this comes from the Minecraft default {@code Item.getUseDuration}
-     * implementation and does not represent a real gun reload duration.
-     */
-    private static final int MAX_VALID_RELOAD_TICKS = 72000;
-
     public static boolean isJegGun(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return false;
         try {
@@ -176,7 +169,7 @@ public final class JustEnoughGunsCompat {
                 Object result = m.invoke(itemObj, stack, (Object) null);
                 if (result instanceof Number n) {
                     int v = n.intValue();
-                    if (v > 0 && v < MAX_VALID_RELOAD_TICKS) return v;
+                    if (v > 0 && v < 72000) return v;
                 }
             } catch (NoSuchMethodException | ClassNotFoundException ignored) {}
 
@@ -186,7 +179,7 @@ public final class JustEnoughGunsCompat {
                 Object result = m.invoke(itemObj, stack);
                 if (result instanceof Number n) {
                     int v = n.intValue();
-                    if (v > 0 && v < MAX_VALID_RELOAD_TICKS) return v;
+                    if (v > 0 && v < 72000) return v;
                 }
             } catch (NoSuchMethodException ignored) {}
 

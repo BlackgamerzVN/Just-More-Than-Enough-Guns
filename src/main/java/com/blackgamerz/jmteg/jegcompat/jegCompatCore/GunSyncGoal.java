@@ -21,13 +21,6 @@ public class GunSyncGoal extends Goal {
     private final GunConfig config;
     private int prevAmmoCount = -1;
 
-    /**
-     * Lazy-resolved reload delay in ticks.
-     * {@code -2} = not yet determined, {@code 0} = instant reload (no delay),
-     * {@code > 0} = reload duration from {@link GunConfig#reloadTimeTicks} or JEG reflection.
-     */
-    private int cachedReloadTime = -2;
-
     public GunSyncGoal(PathfinderMob mob, GunConfig config) {
         this.mob = mob;
         this.config = config;
@@ -98,24 +91,21 @@ public class GunSyncGoal extends Goal {
             long gameTime = mob.level().getGameTime();
 
             if (!tag.contains("jmteg_reload_at")) {
-                // Gun just ran dry — resolve the reload delay once and cache it.
-                if (cachedReloadTime == -2) {
-                    int delay = config.reloadTimeTicks;
-                    if (delay <= 0) {
-                        // Try JEG reflection once; store the result (even if -1) so we don't retry.
-                        try {
-                            int reflectedTime = com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat.getJegGunReloadTime(stack);
-                            delay = Math.max(reflectedTime, 0);
-                        } catch (Throwable ignored) {}
-                    }
-                    cachedReloadTime = delay; // 0 = instant, > 0 = delayed
+                // Gun just ran dry — start the reload timer.
+                int delay = config.reloadTimeTicks;
+                if (delay <= 0) {
+                    // Try JEG reflection as a last resort.
+                    try {
+                        int reflectedTime = com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat.getJegGunReloadTime(stack);
+                        if (reflectedTime > 0) delay = reflectedTime;
+                    } catch (Throwable ignored) {}
                 }
-                if (cachedReloadTime > 0) {
-                    tag.putLong("jmteg_reload_at", gameTime + cachedReloadTime);
+                if (delay > 0) {
+                    tag.putLong("jmteg_reload_at", gameTime + delay);
                     prevAmmoCount = cur;
                     return; // wait — do not fill ammo yet
                 }
-                // cachedReloadTime == 0: instant reload (legacy behaviour)
+                // delay == 0: instant reload (legacy behaviour)
             } else {
                 long readyAt = tag.getLong("jmteg_reload_at");
                 if (gameTime < readyAt) {
