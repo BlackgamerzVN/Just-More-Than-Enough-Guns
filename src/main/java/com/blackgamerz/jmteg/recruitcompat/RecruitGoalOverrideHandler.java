@@ -2,11 +2,15 @@ package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ShieldItem;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -80,6 +84,9 @@ public final class RecruitGoalOverrideHandler {
         boolean hasJegGun = main != null && !main.isEmpty() && JustEnoughGunsCompat.isJegGun(main);
 
         if (hasJegGun) {
+            // Proactively remove shield from two-handed (non-SIDEARM) recruits so it is
+            // dropped even before the attack goal runs its first 20-tick role refresh.
+            proactivelyUnequipShieldIfNeeded(mob, main);
             if (RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) {
                 addFallbackIfMissing(mob);       // resupply@0 + attack@1 + sanitizer
             } else {
@@ -243,6 +250,35 @@ public final class RecruitGoalOverrideHandler {
             evaluateAndApplyForMob(mob);
         } catch (Throwable t) {
             LOGGER.debug("forceReevaluate failed for " + mob, t);
+        }
+    }
+
+    /**
+     * Proactively removes the shield from a recruit's offhand when the held gun is
+     * determined to be a two-handed (non-SIDEARM) weapon.
+     *
+     * <p>This is called from {@link #evaluateAndApplyForMob} on entity join and on
+     * every equipment change so the shield is dropped even before the attack goal
+     * runs its first role-refresh tick.
+     */
+    private static void proactivelyUnequipShieldIfNeeded(PathfinderMob mob, ItemStack heldGun) {
+        try {
+            ItemStack offhand = mob.getOffhandItem();
+            if (offhand.isEmpty() || !(offhand.getItem() instanceof ShieldItem)) return;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(heldGun.getItem());
+            if (id == null) return;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier = RecruitLoadoutConfigManager.getTierConfig(classKey);
+            RecruitGunRole role = RecruitGunSelector.detectRole(id, tier);
+            if (role != RecruitGunRole.SIDEARM) {
+                ItemStack shield = offhand.copy();
+                mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+                mob.spawnAtLocation(shield);
+                LOGGER.info("Proactively removed shield from two-handed-gun recruit {}", mob);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("proactivelyUnequipShieldIfNeeded failed", t);
         }
     }
 

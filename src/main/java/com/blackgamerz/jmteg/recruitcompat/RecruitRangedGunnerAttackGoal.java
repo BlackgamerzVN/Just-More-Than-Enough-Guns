@@ -7,8 +7,13 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.projectile.FishingHook;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ShieldItem;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -193,6 +198,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     public void stop() {
         // ensure we remove any temporary ADS modifier when goal stops
         disableAdsOnHeldGun();
+        lowerShield();
         mob.getNavigation().stop();
         this.state = State.IDLE;
     }
@@ -219,7 +225,17 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // Re-score nearby enemies on the same cadence as the profile refresh so the
             // recruit shifts to a tactically appropriate target without per-tick scanning.
             pickBestRoleAwareTarget();
+            // Auto-unequip shield from two-handed (non-SIDEARM) gun recruits.
+            // This runs every ROLE_CACHE_INTERVAL ticks; the proactive check in
+            // RecruitGoalOverrideHandler handles the case before the first tick.
+            if (cachedRole != RecruitGunRole.SIDEARM) {
+                unequipShieldIfPresent();
+            }
         }
+
+        // Shield blocking for SIDEARM recruits — evaluated every tick so the recruit
+        // raises or lowers the shield as threats appear and disappear.
+        updateShieldBlocking();
 
         LivingEntity target = mob.getTarget();
         if (target == null || !target.isAlive()) {
@@ -873,5 +889,124 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         LivingEntity enemyTarget = enemyMob.getTarget();
         if (enemyTarget == null) return 0.0;
         return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
+    }
+
+    // ── Shield management ─────────────────────────────────────────────────────
+
+    /**
+     * Multiplier applied to {@link RecruitRoleProfile#safeDistance} to define the
+     * range at which a SIDEARM recruit raises its shield against a close-range threat.
+     */
+    private static final double SHIELD_RAISE_RANGE_FACTOR = 1.5;
+
+    /** Radius (blocks) within which incoming {@link Projectile}s trigger a shield raise. */
+    private static final double SHIELD_PROJECTILE_SCAN_RADIUS = 10.0;
+
+    /**
+     * Returns {@code true} when the mob has a {@link ShieldItem} equipped in its offhand slot.
+     */
+    private boolean hasShieldInOffhand() {
+        ItemStack off = mob.getOffhandItem();
+        return off != null && !off.isEmpty() && off.getItem() instanceof ShieldItem;
+    }
+
+    /**
+     * Per-tick shield state management for SIDEARM recruits that carry a shield:
+     * <ul>
+     *   <li>Raises the shield (starts using offhand item) when a close enemy or an
+     *       incoming projectile is detected — except while in the {@link State#AIM} state
+     *       where the shield must be lowered so the recruit can fire.</li>
+     *   <li>Lowers the shield (stops using item) at all other times.</li>
+     * </ul>
+     * For non-SIDEARM recruits, any currently active blocking is cancelled immediately;
+     * the shield itself is physically removed by {@link #unequipShieldIfPresent()}.
+     */
+    private void updateShieldBlocking() {
+        if (cachedRole != RecruitGunRole.SIDEARM || !hasShieldInOffhand()) {
+            if (mob.isUsingItem()) mob.stopUsingItem();
+            return;
+        }
+
+        // During the AIM window the recruit needs a free hand to fire — lower the shield
+        if (state == State.AIM) {
+            if (mob.isUsingItem()) mob.stopUsingItem();
+            return;
+        }
+
+        boolean shouldBlock = shouldRaiseShield();
+        if (shouldBlock && !mob.isUsingItem()) {
+            mob.startUsingItem(InteractionHand.OFF_HAND);
+        } else if (!shouldBlock && mob.isUsingItem()) {
+            mob.stopUsingItem();
+        }
+    }
+
+    /**
+     * Determines whether the SIDEARM recruit should currently raise its shield.
+     * Returns {@code true} when the current target is within close range
+     * ({@code safeDistance × SHIELD_RAISE_RANGE_FACTOR}) or an incoming projectile
+     * is detected within {@link #SHIELD_PROJECTILE_SCAN_RADIUS} blocks.
+     */
+    private boolean shouldRaiseShield() {
+        LivingEntity target = mob.getTarget();
+        if (target != null && target.isAlive()) {
+            double dist = mob.distanceTo(target);
+            double shieldRange = currentProfile.safeDistance * SHIELD_RAISE_RANGE_FACTOR;
+            if (dist <= shieldRange) return true;
+        }
+        return detectIncomingProjectile();
+    }
+
+    /**
+     * Scans nearby entities for {@link Projectile}s that are moving towards the mob
+     * and were not fired by the mob itself or an ally.
+     *
+     * @return {@code true} if at least one such projectile is detected
+     */
+    private boolean detectIncomingProjectile() {
+        List<Projectile> projectiles = mob.level().getEntitiesOfClass(
+                Projectile.class,
+                mob.getBoundingBox().inflate(SHIELD_PROJECTILE_SCAN_RADIUS),
+                p -> {
+                    if (p instanceof FishingHook) return false;
+                    if (p.getOwner() == mob) return false;
+                    if (p.getOwner() instanceof LivingEntity owner) {
+                        return !mob.isAlliedTo(owner);
+                    }
+                    return true; // unknown owner — treat as hostile
+                });
+        Vec3 mobPos = mob.position();
+        for (Projectile proj : projectiles) {
+            Vec3 vel = proj.getDeltaMovement();
+            if (vel.lengthSqr() < 1e-6) continue;
+            Vec3 toMob = mobPos.subtract(proj.position());
+            if (vel.dot(toMob) > 0) return true; // projectile heading towards mob
+        }
+        return false;
+    }
+
+    /**
+     * Stops the mob from using its offhand item, effectively lowering a raised shield.
+     * Safe to call when no item is currently being used.
+     */
+    private void lowerShield() {
+        if (mob.isUsingItem()) {
+            mob.stopUsingItem();
+        }
+    }
+
+    /**
+     * Removes the shield from the mob's offhand and drops it into the world.
+     * Called for non-SIDEARM recruits to ensure they cannot passively hold a shield
+     * while wielding a two-handed gun.  The dropped item can be re-collected normally
+     * but will be dropped again on the next role-refresh if the recruit equips it again
+     * while still carrying a two-handed weapon.
+     */
+    private void unequipShieldIfPresent() {
+        if (!hasShieldInOffhand()) return;
+        ItemStack shield = mob.getOffhandItem().copy();
+        mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+        mob.spawnAtLocation(shield);
+        LOGGER.debug("Dropped shield from two-handed-gun recruit {}", mob);
     }
 }
