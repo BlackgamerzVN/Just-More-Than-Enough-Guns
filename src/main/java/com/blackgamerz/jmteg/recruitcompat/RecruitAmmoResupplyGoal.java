@@ -198,7 +198,7 @@ public class RecruitAmmoResupplyGoal extends Goal {
                 needed -= take;
             }
             if (taken > 0) {
-                gunStack.getOrCreateTag().putInt("AmmoCount", Math.min(curAmmo + taken, maxAmmo));
+                AmmoConsumptionHandler.setAmmoCount(gunStack, curAmmo + taken);
                 LOGGER.debug("{} pulled {} ammo from chest at {}, AmmoCount now {}",
                         mob, taken, pos, curAmmo + taken);
             }
@@ -256,18 +256,30 @@ public class RecruitAmmoResupplyGoal extends Goal {
                 if (candidate.isEmpty()) continue;
                 if (!GunAmmoResolver.isAmmoForGun(candidate, gunStack)) continue;
 
-                // Never drain an ally completely — take at most half their stack
-                int available = candidate.getCount() / 2;
+                // Calculate how many rounds this ally can donate without being left empty.
+                // We keep at least half their stack; a stack of 1 donates 0 (intentional —
+                // we never take a recruit's last round).
+                int available = calculateShareableAmount(candidate.getCount());
                 if (available <= 0) continue;
 
                 int take = Math.min(needed, available);
                 candidate.shrink(take);
                 ReflectionCache.tryWriteBackInventoryItem(allyInv, i, candidate);
-                gunStack.getOrCreateTag().putInt("AmmoCount", Math.min(curAmmo + take, maxAmmo));
+                AmmoConsumptionHandler.setAmmoCount(gunStack, curAmmo + take);
                 return true;
             }
         } catch (Throwable ignored) {}
         return false;
+    }
+
+    /**
+     * Returns how many rounds this ally can donate while retaining at least half their stack.
+     *
+     * <p>Policy: donate at most {@code stackSize / 2} rounds (integer division).
+     * A stack of size 1 returns 0 — we never take a recruit's last round.
+     */
+    private static int calculateShareableAmount(int stackSize) {
+        return stackSize / 2;
     }
 
     // ── Strategy 3: chest search ──────────────────────────────────────────────
@@ -275,13 +287,18 @@ public class RecruitAmmoResupplyGoal extends Goal {
     private BlockPos findNearbyChestWithAmmo(ItemStack gunStack) {
         BlockPos center = mob.blockPosition();
         int r = (int) CHEST_SEARCH_RADIUS;
+        int rSq = r * r;
         BlockPos nearest     = null;
         double   nearestDist = Double.MAX_VALUE;
 
         for (int dx = -r; dx <= r; dx++) {
-            for (int dy = -CHEST_SEARCH_HALF_HEIGHT; dy <= CHEST_SEARCH_HALF_HEIGHT; dy++) {
-                for (int dz = -r; dz <= r; dz++) {
+            for (int dz = -r; dz <= r; dz++) {
+                // Restrict to a circular horizontal radius to skip corner positions
+                if (dx * dx + dz * dz > rSq) continue;
+                for (int dy = -CHEST_SEARCH_HALF_HEIGHT; dy <= CHEST_SEARCH_HALF_HEIGHT; dy++) {
                     BlockPos pos = center.offset(dx, dy, dz);
+                    // Skip unloaded chunks to avoid chunk-loading side effects
+                    if (!mob.level().hasChunkAt(pos)) continue;
                     try {
                         BlockEntity be = mob.level().getBlockEntity(pos);
                         if (!(be instanceof Container container)) continue;

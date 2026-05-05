@@ -131,12 +131,12 @@ public final class RecruitGoalOverrideHandler {
         // Resupply goal at priority 0: preempts attack only when gun is empty, then yields immediately.
         if (!hasResupplyGoal) {
             mob.goalSelector.addGoal(0, new RecruitAmmoResupplyGoal(mob));
-            LOGGER.info("Added RecruitAmmoResupplyGoal to {}", mob);
+            LOGGER.debug("Added RecruitAmmoResupplyGoal to {}", mob);
         }
         // Attack goal at priority 1: runs normally when ammo is available.
         if (!hasAttackGoal) {
             mob.goalSelector.addGoal(1, new RecruitRangedGunnerAttackGoal(mob));
-            LOGGER.info("Added fallback RecruitRangedGunnerAttackGoal to {}", mob);
+            LOGGER.debug("Added fallback RecruitRangedGunnerAttackGoal to {}", mob);
         }
     }
 

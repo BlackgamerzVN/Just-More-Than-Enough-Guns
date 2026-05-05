@@ -55,7 +55,7 @@ public class AmmoConsumptionHandler {
                         if (isValidAmmo(stack, gunStack)) {
                             stack.shrink(1);
                             ReflectionCache.tryWriteBackInventoryItem(inventory, i, stack);
-                            gunStack.getOrCreateTag().putInt("AmmoCount", maxAmmo);
+                            setAmmoCount(gunStack, maxAmmo);
                             return true;
                         }
                     }
@@ -68,7 +68,7 @@ public class AmmoConsumptionHandler {
             for (ItemStack stack : player.getInventory().items) {
                 if (isValidAmmo(stack, gunStack)) {
                     stack.shrink(1);
-                    gunStack.getOrCreateTag().putInt("AmmoCount", maxAmmo);
+                    setAmmoCount(gunStack, maxAmmo);
                     return true;
                 }
             }
@@ -78,7 +78,7 @@ public class AmmoConsumptionHandler {
         ItemStack offhand = mob.getOffhandItem();
         if (isValidAmmo(offhand, gunStack)) {
             offhand.shrink(1);
-            gunStack.getOrCreateTag().putInt("AmmoCount", maxAmmo);
+            setAmmoCount(gunStack, maxAmmo);
             return true;
         }
 
@@ -114,5 +114,21 @@ public class AmmoConsumptionHandler {
             LOGGER.debug("getMaxAmmo failed, using fallback", t);
             return 6;
         }
+    }
+
+    /**
+     * Writes {@code count} (clamped to {@link #getMaxAmmo}) into the
+     * {@code AmmoCount} NBT entry of {@code gunStack}.
+     *
+     * <p>Use this helper instead of accessing NBT directly so all ammo-count
+     * mutations go through a single call site.
+     *
+     * @param gunStack the gun whose AmmoCount will be updated in-place
+     * @param count    the new ammo count; values above {@code getMaxAmmo} are clamped
+     */
+    public static void setAmmoCount(ItemStack gunStack, int count) {
+        if (gunStack == null || gunStack.isEmpty()) return;
+        int clamped = Math.min(count, getMaxAmmo(gunStack));
+        gunStack.getOrCreateTag().putInt("AmmoCount", Math.max(0, clamped));
     }
 }
