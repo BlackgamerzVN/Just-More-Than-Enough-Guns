@@ -27,7 +27,7 @@ import java.util.UUID;
  *
  * <p>Any recruit that does not belong to either category (e.g., a wild or
  * purely NPC recruit spawned without player interaction) retains the original
- * weapon-reload behaviour: {@code IgnoreAmmo} is never stripped, {@code AmmoCount}
+ * weapon-reload behavior: {@code IgnoreAmmo} is never stripped, {@code AmmoCount}
  * is never clamped, and {@link RecruitAmmoResupplyGoal} is never registered.</p>
  *
  * <p>All detection is done via soft-dependency reflection so this class compiles
@@ -116,8 +116,10 @@ public final class RecruitOwnershipHelper {
                 if (m == null) continue;
                 Object result = m.invoke(mob);
                 if (result instanceof UUID uuid) {
-                    // A non-null UUID with at least one non-zero bit means "owned"
-                    if (uuid.getMostSignificantBits() != 0 || uuid.getLeastSignificantBits() != 0) {
+                    // A non-zero UUID (neither most- nor least-significant bits are zero)
+                    // indicates the recruit has an owner. Comparing against the sentinel
+                    // zero-UUID is clearer than checking each component separately.
+                    if (!uuid.equals(new UUID(0L, 0L))) {
                         return true;
                     }
                 }
