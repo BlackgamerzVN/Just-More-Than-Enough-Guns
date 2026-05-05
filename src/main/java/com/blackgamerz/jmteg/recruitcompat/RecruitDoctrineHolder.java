@@ -155,10 +155,7 @@ public final class RecruitDoctrineHolder {
                         return d;
                     }
                 }
-            } catch (Throwable ignored) {}
-        }
-        return null;
-    }
+            } catch (Exception ignored) {}
 
     // ── Shift-right-click interaction ─────────────────────────────────────────
 
@@ -247,7 +244,7 @@ public final class RecruitDoctrineHolder {
                             + " §7(" + describeDoctrineShort(doctrine) + ")"),
                     true);
             return 1;
-        } catch (Throwable e) {
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
             ctx.getSource().sendFailure(Component.literal(
                     "This command must be run by an entity (not the console)."));
             return 0;
@@ -267,7 +264,7 @@ public final class RecruitDoctrineHolder {
                 if (method == null) continue;
                 Object result = method.invoke(mob);
                 if (result instanceof java.util.UUID uuid && uuid.equals(player.getUUID())) return true;
-            } catch (Throwable ignored) {}
+            } catch (Exception ignored) {}
         }
         for (String m : OWNER_ENTITY_METHODS) {
             try {
@@ -276,7 +273,7 @@ public final class RecruitDoctrineHolder {
                 Object result = method.invoke(mob);
                 if (result instanceof net.minecraft.world.entity.LivingEntity le
                         && le.getUUID().equals(player.getUUID())) return true;
-            } catch (Throwable ignored) {}
+            } catch (Exception ignored) {}
         }
         return false;
     }
