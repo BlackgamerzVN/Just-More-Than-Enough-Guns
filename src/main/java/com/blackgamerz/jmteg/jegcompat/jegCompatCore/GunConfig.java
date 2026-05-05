@@ -9,15 +9,29 @@ import net.minecraft.resources.ResourceLocation;
 public final class GunConfig {
     public enum ReloadKind { SINGLE_ITEM, PROJECTILE_OR_MAG }
 
-    public final ResourceLocation itemId; // gun item registry name, e.g. "jeg:bolt_action_rifle"
-    public final int maxAmmo;             // magazine size
-    public final ReloadKind reloadKind;   // SINGLE_ITEM means uses a reload item, else consumes projectiles from pool
-    public final ResourceLocation poolId; // ResourceLocation used for mob ammo pool (reload item id or projectile id)
+    public final ResourceLocation itemId;    // gun item registry name, e.g. "jeg:bolt_action_rifle"
+    public final int maxAmmo;                // magazine size
+    public final ReloadKind reloadKind;      // SINGLE_ITEM means uses a reload item, else consumes projectiles from pool
+    public final ResourceLocation poolId;    // ResourceLocation used for mob ammo pool (reload item id or projectile id)
+    /**
+     * Reload duration in server ticks used as a fallback when JEG reflection cannot
+     * supply the gun's actual reload time.  A value of {@code 0} means instant reload
+     * (legacy behaviour).  Typical values: pistols 25, rifles 40, heavy 60.
+     */
+    public final int reloadTimeTicks;
 
-    public GunConfig(ResourceLocation itemId, int maxAmmo, ReloadKind reloadKind, ResourceLocation poolId) {
+    public GunConfig(ResourceLocation itemId, int maxAmmo, ReloadKind reloadKind,
+                     ResourceLocation poolId, int reloadTimeTicks) {
         this.itemId = itemId;
         this.maxAmmo = maxAmmo;
         this.reloadKind = reloadKind;
         this.poolId = poolId;
+        this.reloadTimeTicks = reloadTimeTicks;
+    }
+
+    /** Convenience constructor that keeps existing call-sites working (reloadTimeTicks = 0). */
+    public GunConfig(ResourceLocation itemId, int maxAmmo, ReloadKind reloadKind,
+                     ResourceLocation poolId) {
+        this(itemId, maxAmmo, reloadKind, poolId, 0);
     }
 }
