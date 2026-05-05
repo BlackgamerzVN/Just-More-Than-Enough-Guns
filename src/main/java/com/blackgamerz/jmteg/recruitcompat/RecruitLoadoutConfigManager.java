@@ -307,6 +307,6 @@ public final class RecruitLoadoutConfigManager {
 
     private static ResourceLocation rl(String id) {
         ResourceLocation loc = ResourceLocation.tryParse(id);
-        return loc != null ? loc : new ResourceLocation("minecraft", "air");
+        return loc != null ? loc : ResourceLocation.fromNamespaceAndPath("minecraft", "air");
     }
 }
