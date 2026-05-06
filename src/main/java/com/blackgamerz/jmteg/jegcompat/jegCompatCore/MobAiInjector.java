@@ -66,6 +66,12 @@ public final class MobAiInjector {
         Entity entity = event.getEntity();
         if (!(entity instanceof PathfinderMob mob)) return;
 
+        // Recruit entities have their own ammo goal (RecruitAmmoResupplyGoal) injected by
+        // RecruitGoalOverrideHandler. GunSyncGoal must not be added for recruits or it would
+        // compete with that goal and double-consume ammo on reload.
+        String fqcn = mob.getClass().getName();
+        if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
+
         GunConfigManager.ensureLoaded();
         scannerConfigManager.ensureLoaded();
 

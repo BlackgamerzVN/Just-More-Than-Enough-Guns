@@ -31,9 +31,9 @@ public final class MobAiInjectorReflection {
         // Recruit entities are fully handled by RecruitGoalOverrideHandler + RecruitRangedGunnerAttackGoal.
         // Injecting a separate GunAttackGoal here would create a competing priority-0 goal that
         // conflicts with JMTEG's recruit attack goal (priority 1) and with the resupply goal (priority 0).
-        // Use the canonical package prefix of the Recruits mod (by Talhanation) to avoid false positives.
+        // Match both the canonical Talhanation package and any subclassed/relocated variants.
         String fqcn = mob.getClass().getName();
-        if (fqcn.startsWith("com.talhanation.recruits.")) return;
+        if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
 
         try {
             // Try to load JEG classes. If any are missing, Class.forName will throw and we abort.
