@@ -1,6 +1,7 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -17,6 +18,7 @@ import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -274,11 +276,38 @@ public final class RecruitGoalOverrideHandler {
             if (role != RecruitGunRole.SIDEARM) {
                 ItemStack shield = offhand.copy();
                 mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+                // Also clear from the Recruits SimpleContainer so the mod doesn't re-sync it back.
+                tryRemoveShieldFromRecruitInventory(mob);
                 mob.spawnAtLocation(shield);
                 LOGGER.info("Proactively removed shield from two-handed-gun recruit {}", mob);
             }
         } catch (Throwable t) {
             LOGGER.debug("proactivelyUnequipShieldIfNeeded failed", t);
+        }
+    }
+
+    /**
+     * Scans the Recruits mod SimpleContainer (via reflection) for a shield item and
+     * removes the first one found.  This prevents the Recruits mod from re-syncing the
+     * shield back into the offhand slot after the equipment slot has been cleared.
+     * Safe to call when the Recruits mod is absent; all exceptions are swallowed.
+     */
+    static void tryRemoveShieldFromRecruitInventory(PathfinderMob mob) {
+        try {
+            Object inv = ReflectionCache.tryGetInventoryObject(mob);
+            if (inv == null) return;
+            Method getSize = inv.getClass().getMethod("getContainerSize");
+            Method getItem = inv.getClass().getMethod("getItem", int.class);
+            int size = (int) getSize.invoke(inv);
+            for (int i = 0; i < size; i++) {
+                ItemStack s = (ItemStack) getItem.invoke(inv, i);
+                if (s != null && !s.isEmpty() && s.getItem() instanceof ShieldItem) {
+                    ReflectionCache.tryWriteBackInventoryItem(inv, i, ItemStack.EMPTY);
+                    break; // stop after removing the first shield found
+                }
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("tryRemoveShieldFromRecruitInventory failed", t);
         }
     }
 
