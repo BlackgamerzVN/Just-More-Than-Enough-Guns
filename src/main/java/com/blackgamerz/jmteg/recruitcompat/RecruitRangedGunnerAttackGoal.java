@@ -1,15 +1,21 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 import java.util.EnumSet;
+import java.util.List;
 
 /**
  * Movement/aim-only fallback for recruits holding JEG guns.
@@ -23,30 +29,55 @@ import java.util.EnumSet;
  * - Strafing + retreat while aiming: the recruit will strafe left/right and retreat when target is too close
  * - Temporary ADS-like spread reduction: while the recruit is in AIM state we temporarily lower the held
  *   gun's spread value in NBT so JEG treats the weapon as if the shooter were aiming (player ADS).
+ * - Role-weight stat modifiers: aim time, cooldown, ADS spread benefit, and attack range are all
+ *   scaled by how appropriate the held gun is for this recruit's tier.  A Bowman forced to use a
+ *   rocket launcher (weight≈0) will aim slower, fire less accurately, cool down slower, and engage
+ *   at shorter range than a CrossBowman holding the same weapon (weight=1.0).
+ * - Role-specific pathfinding: each {@link RecruitGunRole} has its own {@link RecruitRoleProfile}
+ *   that drives preferred engagement range, safe distance, retreat speed, and whether the recruit
+ *   strafes while aiming.  The profile is refreshed every 20 ticks so it adapts automatically
+ *   when the recruit's held weapon changes.
+ * - Role-aware target selection: every 20 ticks (same cadence as the profile refresh) the recruit
+ *   re-scores nearby enemies and picks the tactically best one for its current role — SIDEARM
+ *   closes on the nearest threat, TACTICAL_RANGED hunts exposed / low-health targets, HEAVY
+ *   walks into the largest enemy cluster, and UTILITY recruits prioritise enemies that are
+ *   actively attacking nearby allies.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
 public class RecruitRangedGunnerAttackGoal extends Goal {
+    private static final Logger LOGGER = LogManager.getLogger("JMTEG-AttackGoal");
+
     private final PathfinderMob mob;
 
     private enum State { IDLE, SEEK, AIM, COOLDOWN }
     private State state = State.IDLE;
 
-    private static final double ATTACK_RANGE = 16.0;
-    private static final double ATTACK_RANGE_SQ = ATTACK_RANGE * ATTACK_RANGE;
+    // ── Role-profile cache ────────────────────────────────────────────────────
+    // Refreshed every ROLE_CACHE_INTERVAL ticks (or immediately when the role changes).
 
-    // Safety / avoidance tuning
-    private static final double SAFE_DISTANCE = 4.0; // recruit will try to stay at least this far (blocks)
-    private static final double SAFE_EXIT_BUFFER = 2.0; // add this to SAFE_DISTANCE to exit avoiding
+    /** How often (ticks) to re-detect the held gun's role and rebuild the movement profile. */
+    private static final int ROLE_CACHE_INTERVAL = 20;
 
-    // Strafing tuning
-    private static final double STRAFE_DISTANCE = 1.5; // lateral offset in blocks when strafing
-    private static final int STRAFE_CHANGE_TICKS = 40; // how often to choose a new strafe direction
-    private static final double STRAFE_SPEED = 1.0D; // navigation speed while strafing
-    private static final double RETREAT_SPEED = 1.25D; // speed used when retreating
-    private static final double RETREAT_EXTRA = 1.5; // extra distance when retreating beyond SAFE_DISTANCE
+    /** Last detected gun role (null = unknown / not in any pool). */
+    private RecruitGunRole cachedRole = null;
+    /** Movement/positioning profile derived from {@link #cachedRole} and {@link #currentDoctrine}. */
+    private RecruitRoleProfile currentProfile = RecruitRoleProfile.forRole(null);
+    /** Counts down from ROLE_CACHE_INTERVAL; profile is refreshed when it reaches 0. */
+    private int roleCacheTick = 0;
 
-    // Tuning: adjust these for server/mod config
+    // ── Doctrine cache ────────────────────────────────────────────────────────
+    // Refreshed on the same cadence as the role profile so doctrine changes are
+    // picked up within ROLE_CACHE_INTERVAL ticks without per-tick NBT reads.
+
+    /**
+     * Active doctrine for this recruit, or {@code null} if none is set.
+     * Refreshed via {@link RecruitDoctrineHolder#getDoctrine(PathfinderMob)} every
+     * {@link #ROLE_CACHE_INTERVAL} ticks.
+     */
+    private RecruitDoctrine currentDoctrine = null;
+
+    // ── Tuning: aim / cooldown timing ─────────────────────────────────────────
     private static final int MIN_AIM_TICKS = 5;
     private static final int MAX_AIM_TICKS = 40; // far targets get longer aim time
     private static final int MIN_COOLDOWN_TICKS = 8;
@@ -61,7 +92,51 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     // ADS-like spread multiplier: while AIMing the gun's stored spread will be multiplied by this.
     // 1.0 = no change, 0.5 = half spread (more accurate). Tweak to your taste.
+    // This is the best-case (weight=1.0) multiplier; inappropriate guns receive less benefit.
     private static final float ADS_SPREAD_MULTIPLIER = 0.025f;
+
+    // Role-weight stat modifiers ──────────────────────────────────────────────
+    // All four affect behaviour when the held gun is "inappropriate" for this recruit's tier
+    // (i.e. its role-weight < 1.0).  At weight=1.0 these have no effect.
+
+    /** Aim time at weight=0.0 will be this many times longer than at weight=1.0. */
+    private static final double MAX_AIM_PENALTY_FACTOR      = 2.5;
+    /** Cooldown at weight=0.0 will be this many times longer than at weight=1.0. */
+    private static final double MAX_COOLDOWN_PENALTY_FACTOR = 2.0;
+    /** Effective attack range at weight=0.0 is this fraction of ATTACK_RANGE. */
+    private static final double MIN_RANGE_FACTOR            = 0.625;
+
+    // Role-aware target-selection tuning ──────────────────────────────────────
+    // These constants control the scoring formulae for each role.  Adjust to taste.
+
+    /** Minimum entity-scan radius (blocks) used by pickBestRoleAwareTarget(). */
+    private static final double MIN_TARGET_SEARCH_RADIUS = 24.0;
+
+    // SIDEARM: inverse-square distance scoring
+    /** Numerator for the SIDEARM inverse-square distance score (higher = prefer closer more). */
+    private static final double SIDEARM_SCORE_MULTIPLIER = 4.0;
+    /** Offset added to distance before squaring, preventing division-by-zero at point-blank range. */
+    private static final double SIDEARM_DISTANCE_OFFSET  = 0.5;
+
+    // TACTICAL_RANGED: LOS + health + distance
+    /** Score bonus awarded when the recruit has a clear line of sight to the target. */
+    private static final double TACTICAL_LOS_BONUS       = 1.5;
+    /** Distance scale divisor in the TACTICAL_RANGED distance component (higher = more forgiving). */
+    private static final double TACTICAL_DISTANCE_SCALE  = 0.5;
+
+    // HEAVY: cluster-of-enemies scoring
+    /** Radius (blocks) around a candidate target used to count nearby enemies for HEAVY scoring. */
+    private static final double HEAVY_CLUSTER_RADIUS     = 6.0;
+    /** Score weight applied to each enemy found in the cluster radius. */
+    private static final double HEAVY_CLUSTER_WEIGHT     = 1.2;
+    /** Distance scale divisor in the HEAVY distance tiebreaker component. */
+    private static final double HEAVY_DISTANCE_SCALE     = 0.1;
+
+    // UTILITY: ally-threat scoring
+    /** Score multiplier applied to the threat bonus when an enemy is targeting a friendly. */
+    private static final double UTILITY_THREAT_WEIGHT    = 2.0;
+    /** Distance offset preventing division-by-zero in the UTILITY distance component. */
+    private static final double UTILITY_DISTANCE_OFFSET  = 0.1;
 
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
@@ -74,9 +149,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int strafeTimer = 0;
     private int strafeDirection = 1; // +1 = right, -1 = left
 
+    /** Default initial strafe half-period used in the constructor before the first role detection. */
+    private static final int DEFAULT_STRAFE_INIT_TICKS = 20; // half of BASIC_RANGED strafeChangeTicks
+
     public RecruitRangedGunnerAttackGoal(PathfinderMob mob) {
         this.mob = mob;
-        this.strafeTimer = STRAFE_CHANGE_TICKS / 2;
+        this.strafeTimer = DEFAULT_STRAFE_INIT_TICKS;
         this.strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
     }
 
@@ -102,8 +180,13 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
-        strafeTimer = STRAFE_CHANGE_TICKS / 2;
+        strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
+        // Force profile and doctrine re-detection on next tick so the goal starts with current info
+        roleCacheTick = 0;
+        cachedRole = null;
+        currentDoctrine = null;
+        currentProfile = RecruitRoleProfile.forRole(null);
     }
 
     @Override
@@ -116,6 +199,28 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     @Override
     public void tick() {
+        // ── Profile refresh ───────────────────────────────────────────────────
+        // Detect the held gun's role every ROLE_CACHE_INTERVAL ticks (or on first tick).
+        // When the role changes the profile is swapped immediately so movement parameters
+        // update without waiting for the full interval.
+        roleCacheTick--;
+        if (roleCacheTick <= 0) {
+            roleCacheTick = ROLE_CACHE_INTERVAL;
+            RecruitGunRole detectedRole = detectHeldGunRole();
+            RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getDoctrine(mob);
+            if (detectedRole != cachedRole || detectedDoctrine != currentDoctrine) {
+                cachedRole      = detectedRole;
+                currentDoctrine = detectedDoctrine;
+                currentProfile  = RecruitRoleProfile.forRole(cachedRole).applyDoctrine(currentDoctrine);
+                LOGGER.debug("{} switched to role profile {} (role={}, doctrine={})",
+                        mob, currentProfile, cachedRole,
+                        currentDoctrine != null ? currentDoctrine.name() : "none");
+            }
+            // Re-score nearby enemies on the same cadence as the profile refresh so the
+            // recruit shifts to a tactically appropriate target without per-tick scanning.
+            pickBestRoleAwareTarget();
+        }
+
         LivingEntity target = mob.getTarget();
         if (target == null || !target.isAlive()) {
             // leaving aim — clean up any temporary ADS modifiers
@@ -127,9 +232,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         double distSq = mob.distanceToSqr(target);
         double dist = Math.sqrt(distSq);
 
+        double effectiveRange   = getEffectiveAttackRange();
+        double effectiveRangeSq = effectiveRange * effectiveRange;
+
         switch (state) {
             case IDLE -> {
-                if (distSq > ATTACK_RANGE_SQ) {
+                if (distSq > effectiveRangeSq) {
                     state = State.SEEK;
                 } else {
                     state = State.AIM;
@@ -138,8 +246,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
             case SEEK -> {
-                if (distSq > ATTACK_RANGE_SQ) {
-                    mob.getNavigation().moveTo(target, 1.1D);
+                if (distSq > effectiveRangeSq) {
+                    mob.getNavigation().moveTo(target, currentProfile.approachSpeed);
                 } else {
                     mob.getNavigation().stop();
                     state = State.AIM;
@@ -148,12 +256,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
             case AIM -> {
-                // If target too close, retreat a bit while still aiming
-                double safeSq = SAFE_DISTANCE * SAFE_DISTANCE;
-                double exitSq = (SAFE_DISTANCE + SAFE_EXIT_BUFFER) * (SAFE_DISTANCE + SAFE_EXIT_BUFFER);
+                // Positioning while aiming — three exclusive branches:
+                //   1. Retreat: target is inside safe distance → back away.
+                //   2. Strafe:  safe and strafeEnabled → circle/strafe the target.
+                //   3. Stand:   safe and !strafeEnabled (heavy role) → plant feet.
+                double safeSq = currentProfile.safeDistance * currentProfile.safeDistance;
 
                 if (distSq < safeSq) {
-                    // retreat directly away from target to reach SAFE_DISTANCE + RETREAT_EXTRA
+                    // retreat directly away from target to reach safeDistance + retreatExtra
                     double dx = mob.getX() - target.getX();
                     double dz = mob.getZ() - target.getZ();
                     double horiz = Math.sqrt(dx * dx + dz * dz);
@@ -164,19 +274,19 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                         dz = Math.sin(angle);
                         horiz = 1.0;
                     }
-                    double desiredDistance = SAFE_DISTANCE + RETREAT_EXTRA;
+                    double desiredDistance = currentProfile.safeDistance + currentProfile.retreatExtra;
                     double nx = target.getX() + (dx / horiz) * desiredDistance;
                     double nz = target.getZ() + (dz / horiz) * desiredDistance;
                     double ny = mob.getY();
 
-                    mob.getNavigation().moveTo(nx, ny, nz, RETREAT_SPEED);
-                } else {
+                    mob.getNavigation().moveTo(nx, ny, nz, currentProfile.retreatSpeed);
+                } else if (currentProfile.strafeEnabled) {
                     // Strafing behavior: pick lateral offsets around current position to circle/strafe target while aiming
                     // update timer and possibly flip direction
                     strafeTimer--;
                     if (strafeTimer <= 0) {
                         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
-                        strafeTimer = STRAFE_CHANGE_TICKS + mob.getRandom().nextInt(20);
+                        strafeTimer = currentProfile.strafeChangeTicks + mob.getRandom().nextInt(20);
                     }
 
                     // Compute perpendicular (left/right) to vector from mob to target
@@ -189,17 +299,20 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     double pz = dx / horiz;
 
                     // target strafe point around current mob position
-                    double strafeX = mob.getX() + px * STRAFE_DISTANCE * strafeDirection;
-                    double strafeZ = mob.getZ() + pz * STRAFE_DISTANCE * strafeDirection;
+                    double strafeX = mob.getX() + px * currentProfile.strafeDistance * strafeDirection;
+                    double strafeZ = mob.getZ() + pz * currentProfile.strafeDistance * strafeDirection;
                     double strafeY = mob.getY();
 
                     // Use navigation so mob can path around obstacles
-                    mob.getNavigation().moveTo(strafeX, strafeY, strafeZ, STRAFE_SPEED);
+                    mob.getNavigation().moveTo(strafeX, strafeY, strafeZ, currentProfile.strafeSpeed);
+                } else {
+                    // Heavy role: plant feet, stop navigation, aim precisely
+                    mob.getNavigation().stop();
                 }
 
                 // Closer targets can snap faster; farther targets get slower, steadier aim.
-                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / ATTACK_RANGE)) * 60.0, 10.0, 120.0);
-                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / ATTACK_RANGE)) * 40.0, 8.0, 90.0);
+                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
+                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
 
                 // Extract projectile properties (try JEG via reflection with multiple fallbacks)
                 float projectileSpeed = getHeldProjectileSpeed(mob);
@@ -228,16 +341,25 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
     }
 
-    // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy
-    private static int computeAimTicks(double distance) {
-        double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
-        // linear interpolate between MIN and MAX
-        return (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
+    // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
+    // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier,
+    // and further scaled by the doctrine's ammoConservation factor (>1 = more careful, conserves ammo).
+    private int computeAimTicks(double distance) {
+        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
+        int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
+        double weight   = getHeldGunWeight();
+        double penalty  = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
+        return (int) Math.round(base * penalty * conserve);
     }
 
-    private static int computeCooldownTicks(double distance) {
-        double t = clamp(distance / ATTACK_RANGE, 0.0, 1.0);
-        return (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
+    private int computeCooldownTicks(double distance) {
+        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
+        int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
+        double weight   = getHeldGunWeight();
+        double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
+        return (int) Math.round(base * penalty * conserve);
     }
 
     private static double clamp(double v, double a, double b) {
@@ -270,12 +392,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             if (generalTag.contains("Spread")) {
                 float orig = generalTag.getFloat("Spread");
                 tag.putFloat(JMTEG_ORIG_SPREAD, orig);
-                generalTag.putFloat("Spread", orig * ADS_SPREAD_MULTIPLIER);
+                generalTag.putFloat("Spread", orig * computeAdsSpreadMultiplier());
             } else {
                 // no explicit Spread stored in NBT; we still mark that we applied ADS but stash a sentinel
                 tag.putFloat(JMTEG_ORIG_SPREAD, Float.NaN);
                 // proactively write a reduced spread so JEG will pick it up when it deserializes
-                generalTag.putFloat("Spread", ADS_SPREAD_MULTIPLIER * 1.0F); // 1.0F is a safe default baseline
+                generalTag.putFloat("Spread", computeAdsSpreadMultiplier() * 1.0F); // 1.0F is a safe default baseline
             }
 
             gunTag.put("General", generalTag);
@@ -447,6 +569,76 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         return angle;
     }
 
+    // ── Role-weight stat-modifier helpers ─────────────────────────────────────
+
+    /**
+     * Returns the role-preference weight (0.0 – 1.0) of the mob's currently held gun
+     * within this recruit's tier config.
+     * <ul>
+     *   <li>1.0 – perfectly appropriate gun (full performance)</li>
+     *   <li>0.0 – gun not in any accessible role pool (maximum penalty)</li>
+     * </ul>
+     * Returns 1.0 (no penalty) on any error or when no gun is held.
+     */
+    private double getHeldGunWeight() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return 1.0;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id == null) return 1.0;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            return RecruitGunSelector.getRoleWeight(id, tier);
+        } catch (Throwable t) {
+            return 1.0; // safe: no penalty when information is unavailable
+        }
+    }
+
+    /**
+     * Returns the effective attack range (blocks) for the currently held gun.
+     * Uses the role profile's preferred range as the base. At weight=1.0 this equals
+     * {@code currentProfile.preferredRange}; at weight=0.0 it is
+     * {@code currentProfile.preferredRange × MIN_RANGE_FACTOR}.
+     */
+    private double getEffectiveAttackRange() {
+        double weight = getHeldGunWeight();
+        return currentProfile.preferredRange * (MIN_RANGE_FACTOR + weight * (1.0 - MIN_RANGE_FACTOR));
+    }
+
+    /**
+     * Detects the {@link RecruitGunRole} of the held gun within this recruit's tier config.
+     * Returns {@code null} when the gun is not in any accessible role pool (the weight
+     * system will already penalise that case; the profile falls back to BASIC_RANGED).
+     */
+    private RecruitGunRole detectHeldGunRole() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return null;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id == null) return null;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            return RecruitGunSelector.detectRole(id, tier);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns the ADS spread multiplier to apply while aiming.
+     * At weight=1.0 this is {@link #ADS_SPREAD_MULTIPLIER} (maximum accuracy benefit).
+     * At weight=0.0 this is 1.0 (no accuracy benefit — the recruit cannot benefit from aiming
+     * with a weapon they are not trained to use).
+     */
+    private float computeAdsSpreadMultiplier() {
+        double weight = getHeldGunWeight();
+        return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - weight));
+    }
+
     /**
      * Robust extraction of projectile base speed from held JEG gun using reflection.
      * Returns DEFAULT_PROJECTILE_SPEED on any failure.
@@ -543,5 +735,143 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         } catch (Throwable ignored) {
         }
         return DEFAULT_PROJECTILE_GRAVITY;
+    }
+
+    // ── Role-aware target selection ───────────────────────────────────────────
+
+    /**
+     * Scans nearby living entities, scores each one according to the current gun role,
+     * and calls {@code mob.setTarget(best)} to override the standard nearest-enemy selection.
+     *
+     * <p>Scoring rules per role:
+     * <ul>
+     *   <li><b>SIDEARM</b>        – strongly prefers the closest threat (inverse-square of distance).</li>
+     *   <li><b>BASIC_RANGED</b>   – prefers the nearest enemy (safe default; inverse of distance).</li>
+     *   <li><b>TACTICAL_RANGED</b>– prefers exposed (clear line-of-sight) and weakened targets.</li>
+     *   <li><b>HEAVY</b>          – prefers targets that are surrounded by the most enemies.</li>
+     *   <li><b>UTILITY</b>        – prefers enemies that are currently targeting nearby allies.</li>
+     * </ul>
+     *
+     * <p>Only called during the profile-refresh window (every {@link #ROLE_CACHE_INTERVAL} ticks)
+     * so entity scanning does not occur every tick.
+     */
+    private void pickBestRoleAwareTarget() {
+        double searchRadius = Math.max(currentProfile.preferredRange * 2.0, MIN_TARGET_SEARCH_RADIUS);
+        List<LivingEntity> candidates = mob.level().getEntitiesOfClass(
+                LivingEntity.class,
+                mob.getBoundingBox().inflate(searchRadius),
+                e -> e != mob && e.isAlive() && !mob.isAlliedTo(e) && mob.canAttack(e));
+
+        if (candidates.isEmpty()) {
+            return;
+        }
+
+        LivingEntity best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (LivingEntity candidate : candidates) {
+            double score = scoreTargetForRole(candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        if (best != null) {
+            mob.setTarget(best);
+        }
+    }
+
+    /**
+     * Computes a priority score for a target candidate based on {@link #cachedRole}.
+     * Higher score = higher priority.  Scores from different roles are not directly
+     * comparable, but within any one role they rank candidates correctly.
+     */
+    private double scoreTargetForRole(LivingEntity target) {
+        double dist = mob.distanceTo(target);
+        RecruitGunRole role = cachedRole != null ? cachedRole : RecruitGunRole.BASIC_RANGED;
+        return switch (role) {
+            case SIDEARM         -> scoreForSidearm(dist);
+            case BASIC_RANGED    -> scoreForBasicRanged(dist);
+            case TACTICAL_RANGED -> scoreForTacticalRanged(dist, target);
+            case HEAVY           -> scoreForHeavy(dist, target);
+            case UTILITY         -> scoreForUtility(dist, target);
+        };
+    }
+
+    /**
+     * SIDEARM: strongly prefers the closest threat.
+     * Score decays as inverse-square of distance so even modest range differences
+     * produce a large preference for the nearer target.
+     */
+    private static double scoreForSidearm(double dist) {
+        double d = dist + SIDEARM_DISTANCE_OFFSET;
+        return SIDEARM_SCORE_MULTIPLIER / (d * d);
+    }
+
+    /**
+     * BASIC_RANGED: simple nearest-first — inverse of distance.
+     * Reproduces the vanilla "attack nearest enemy" behaviour as a baseline.
+     */
+    private static double scoreForBasicRanged(double dist) {
+        return 1.0 / (dist + 0.1);
+    }
+
+    /**
+     * TACTICAL_RANGED: rifles prefer exposed and vulnerable targets.
+     * <ul>
+     *   <li>+1.5 bonus when the recruit has clear line of sight (no cover).</li>
+     *   <li>+0–1.0 bonus proportional to how much health the target has already lost.</li>
+     *   <li>Small distance component breaks ties in favour of closer targets.</li>
+     * </ul>
+     */
+    private double scoreForTacticalRanged(double dist, LivingEntity target) {
+        double losBonus     = mob.hasLineOfSight(target) ? TACTICAL_LOS_BONUS : 0.0;
+        double healthRatio  = target.getMaxHealth() > 0
+                              ? target.getHealth() / target.getMaxHealth() : 1.0;
+        double exposedBonus = 1.0 - healthRatio; // 0 (full health) → 1 (nearly dead)
+        double distScore    = 1.0 / (dist * TACTICAL_DISTANCE_SCALE + 1.0);
+        return losBonus + exposedBonus + distScore;
+    }
+
+    /**
+     * HEAVY (rocket launchers / miniguns): prefers clustered enemy groups.
+     * A large cluster count dominates; distance acts as a tiebreaker.
+     */
+    private double scoreForHeavy(double dist, LivingEntity target) {
+        int cluster = countNearbyEnemies(target, HEAVY_CLUSTER_RADIUS);
+        return cluster * HEAVY_CLUSTER_WEIGHT + 1.0 / (dist * HEAVY_DISTANCE_SCALE + 1.0);
+    }
+
+    /**
+     * UTILITY / support: prefers enemies that are actively threatening nearby allies.
+     * Falls back to nearest when no immediate ally threat is detected.
+     */
+    private double scoreForUtility(double dist, LivingEntity target) {
+        double threatBonus = computeAllyThreatBonus(target);
+        return threatBonus * UTILITY_THREAT_WEIGHT + 1.0 / (dist + UTILITY_DISTANCE_OFFSET);
+    }
+
+    /**
+     * Returns the count of valid enemy entities within {@link #HEAVY_CLUSTER_RADIUS} blocks of
+     * {@code center}.  Used by the HEAVY role scorer to identify clustered target groups.
+     */
+    private int countNearbyEnemies(LivingEntity center, double radius) {
+        return mob.level().getEntitiesOfClass(
+                LivingEntity.class,
+                center.getBoundingBox().inflate(radius),
+                e -> e != mob && e != center && e.isAlive()
+                        && !mob.isAlliedTo(e) && mob.canAttack(e)
+        ).size();
+    }
+
+    /**
+     * Returns 1.0 if {@code enemy} is currently targeting an allied entity, 0.0 otherwise.
+     * Used by the UTILITY role scorer to prioritise threats to friendly units.
+     */
+    private double computeAllyThreatBonus(LivingEntity enemy) {
+        if (!(enemy instanceof Mob enemyMob)) return 0.0;
+        LivingEntity enemyTarget = enemyMob.getTarget();
+        if (enemyTarget == null) return 0.0;
+        return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
     }
 }

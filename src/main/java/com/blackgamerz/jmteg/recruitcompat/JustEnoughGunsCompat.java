@@ -2,6 +2,7 @@ package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import org.apache.logging.log4j.LogManager;
@@ -15,6 +16,13 @@ import net.minecraft.world.entity.LivingEntity;
 /**
  * JEG compatibility helpers (cached reflection via ReflectionCache).
  * Best-effort, safe if JEG absent.
+ *
+ * <p>In addition to the original ammo-check helpers, this class now exposes
+ * {@link #selectBestGunForRecruit(LivingEntity)} which applies the role-based
+ * Bowman / CrossBowman balancing system to pick the most appropriate JEG gun
+ * from a recruit's inventory.  See {@link RecruitGunSelector} for the full
+ * algorithm description and {@link RecruitLoadoutConfigManager} for the
+ * config format.</p>
  */
 public final class JustEnoughGunsCompat {
     private static final Logger LOGGER = LogManager.getLogger("JMT-JEG-Compat");
@@ -71,6 +79,64 @@ public final class JustEnoughGunsCompat {
             LOGGER.debug("consumeAmmoOnGun failed", t);
         }
     }
+
+    // ── Role-based gun selection (Bowman vs CrossBowman balancing) ─────────────
+
+    /**
+     * Selects the best applicable JEG gun for this recruit entity using the
+     * role-tier system (Bowman / CrossBowman balancing).
+     *
+     * <p>Balance summary:</p>
+     * <ul>
+     *   <li><b>Bowman</b> (cheaper) – prefers SIDEARM and BASIC_RANGED roles;
+     *       can use UTILITY at reduced preference and TACTICAL_RANGED at low
+     *       preference; cannot access HEAVY weapons at all.</li>
+     *   <li><b>CrossBowman</b> (expensive / elite) – full access including
+     *       TACTICAL_RANGED and HEAVY at maximum preference.</li>
+     * </ul>
+     *
+     * <p>If no role-pool gun is found, falls back to any JEG gun in inventory
+     * (configurable via {@code fallback_to_any_gun} in recruit_roles.json).</p>
+     *
+     * @param entity the recruit entity
+     * @return best matching gun stack, or {@link ItemStack#EMPTY} if none found
+     */
+    public static ItemStack selectBestGunForRecruit(LivingEntity entity) {
+        if (entity == null) return ItemStack.EMPTY;
+        try {
+            return RecruitGunSelector.selectBestGun(entity);
+        } catch (Throwable t) {
+            LOGGER.debug("selectBestGunForRecruit failed for {}", entity, t);
+            return ItemStack.EMPTY;
+        }
+    }
+
+    /**
+     * Returns the {@link RecruitGunRole} of the given gun stack relative to
+     * the recruit entity's accessible role tier, or {@code null} if the gun
+     * is not matched to any role for this recruit type.
+     *
+     * @param entity   the recruit entity (used to detect Bowman vs CrossBowman tier)
+     * @param gunStack the gun item stack
+     * @return matched role, or {@code null}
+     */
+    public static RecruitGunRole getGunRoleForRecruit(LivingEntity entity, ItemStack gunStack) {
+        if (entity == null || gunStack == null || gunStack.isEmpty()) return null;
+        try {
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(entity);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            ResourceLocation itemId =
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(gunStack.getItem());
+            return RecruitGunSelector.detectRole(itemId, tier);
+        } catch (Throwable t) {
+            LOGGER.debug("getGunRoleForRecruit failed", t);
+            return null;
+        }
+    }
+
+    // ── Original ammo-check helpers ────────────────────────────────────────────
 
     public static boolean hasJegGunAmmo(LivingEntity entity, ItemStack gunStack) {
         try {

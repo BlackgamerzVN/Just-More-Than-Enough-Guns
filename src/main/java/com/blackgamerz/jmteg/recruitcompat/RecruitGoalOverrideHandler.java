@@ -49,18 +49,29 @@ public final class RecruitGoalOverrideHandler {
         if (!(e instanceof PathfinderMob mob)) return;
         if (mob.level().isClientSide) return;
 
-        try { EntityWeaponSanitizer.sanitize(mob); } catch (Throwable t) { LOGGER.debug("sanitize failed", t); }
-
-        // Delay initial registration slightly to avoid race with entity constructors
+        // Delay initial registration slightly to avoid race with entity constructors.
+        // Ownership and equipment are also more reliably readable after the first couple of ticks.
         DeferredTaskScheduler.schedule(() -> {
-            try { evaluateAndApplyForMob(mob); } catch (Throwable t) { LOGGER.debug("deferred replace failed", t); }
+            try {
+                // Only sanitize (strip IgnoreAmmo / clamp AmmoCount) for recruits that are
+                // owned by a player or faction. Unowned/NPC recruits keep the default JEG
+                // mob behaviour where IgnoreAmmo=true and AmmoCount is unconstrained.
+                if (RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) {
+                    try { EntityWeaponSanitizer.sanitize(mob); } catch (Throwable t) { LOGGER.debug("sanitize failed", t); }
+                }
+                evaluateAndApplyForMob(mob);
+            } catch (Throwable t) { LOGGER.debug("deferred replace failed", t); }
         }, 2);
     }
 
     /**
      * Evaluate and apply appropriate goals for this mob:
-     * - If holding JEG gun: ensure fallback movement/aim goal present and remove/remember conflicting goals.
-     * - If not holding JEG gun: remove fallback and restore any stored original goals.
+     * - If holding JEG gun AND ammo-aware (player-owned / faction):
+     *   ensure resupply goal (priority 0) and attack goal (priority 1) are present.
+     * - If holding JEG gun but NOT ammo-aware (wild / NPC recruit):
+     *   ensure only the attack goal (priority 0) is present; skip sanitizer and
+     *   resupply so the recruit retains the original infinite-ammo reload mechanic.
+     * - If not holding JEG gun: remove custom goals and restore stored originals.
      */
     public static void evaluateAndApplyForMob(PathfinderMob mob) {
         if (mob == null || mob.level().isClientSide) return;
@@ -69,15 +80,63 @@ public final class RecruitGoalOverrideHandler {
         boolean hasJegGun = main != null && !main.isEmpty() && JustEnoughGunsCompat.isJegGun(main);
 
         if (hasJegGun) {
-            addFallbackIfMissing(mob);
+            if (RecruitOwnershipHelper.isAmmoAwareRecruit(mob)) {
+                addFallbackIfMissing(mob);       // resupply@0 + attack@1 + sanitizer
+            } else {
+                addAttackGoalOnly(mob);          // attack@0, no sanitizer, no resupply
+            }
         } else {
             restoreOriginalGoalsIfAny(mob);
         }
     }
 
     private static void addFallbackIfMissing(PathfinderMob mob) {
-        // Avoid duplicate fallback
-        boolean hasFallback = false;
+        // Remove any previously registered custom goals to avoid stale priority mismatches.
+        removeAllCustomGoals(mob);
+
+        // Check what custom goals are already present (after removal, this detects externally added ones)
+        boolean hasAttackGoal   = false;
+        boolean hasResupplyGoal = false;
+        Collection<?> entries = mob.goalSelector.getAvailableGoals();
+        if (entries != null) {
+            for (Object entry : entries) {
+                try {
+                    var getGoal = entry.getClass().getMethod("getGoal");
+                    Object goal = getGoal.invoke(entry);
+                    if (goal != null) {
+                        String name = goal.getClass().getName();
+                        if (name.equals(RecruitRangedGunnerAttackGoal.class.getName())) hasAttackGoal   = true;
+                        if (name.equals(RecruitAmmoResupplyGoal.class.getName()))       hasResupplyGoal = true;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        // Remove competing vanilla attack goals and store them for restore
+        removeAndStoreCompetingGoals(mob);
+
+        // Resupply goal at priority 0: preempts attack only when gun is empty, then yields immediately.
+        if (!hasResupplyGoal) {
+            mob.goalSelector.addGoal(0, new RecruitAmmoResupplyGoal(mob));
+            LOGGER.debug("Added RecruitAmmoResupplyGoal to {}", mob);
+        }
+        // Attack goal at priority 1: runs normally when ammo is available.
+        if (!hasAttackGoal) {
+            mob.goalSelector.addGoal(1, new RecruitRangedGunnerAttackGoal(mob));
+            LOGGER.debug("Added RecruitRangedGunnerAttackGoal (ammo-aware) to {}", mob);
+        }
+    }
+
+    /**
+     * Adds only the attack goal (at priority 0) for unowned / NPC recruits that
+     * should retain the original infinite-ammo JEG reload mechanic.
+     * The {@link EntityWeaponSanitizer} is intentionally NOT called here so that
+     * {@code IgnoreAmmo=true} and an unconstrained {@code AmmoCount} are preserved.
+     */
+    private static void addAttackGoalOnly(PathfinderMob mob) {
+        removeAllCustomGoals(mob);
+
+        boolean hasAttackGoal = false;
         Collection<?> entries = mob.goalSelector.getAvailableGoals();
         if (entries != null) {
             for (Object entry : entries) {
@@ -85,14 +144,45 @@ public final class RecruitGoalOverrideHandler {
                     var getGoal = entry.getClass().getMethod("getGoal");
                     Object goal = getGoal.invoke(entry);
                     if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
-                        hasFallback = true;
-                        break;
+                        hasAttackGoal = true;
                     }
                 } catch (Throwable ignored) {}
             }
         }
 
-        // Remove competing attack goals and store them for restore
+        removeAndStoreCompetingGoals(mob);
+
+        if (!hasAttackGoal) {
+            mob.goalSelector.addGoal(0, new RecruitRangedGunnerAttackGoal(mob));
+            LOGGER.debug("Added RecruitRangedGunnerAttackGoal (no-ammo-constraint) to {}", mob);
+        }
+    }
+
+    /** Removes all JMTEG-registered custom goals from the selector (attack + resupply). */
+    private static void removeAllCustomGoals(PathfinderMob mob) {
+        try {
+            Collection<?> avail = mob.goalSelector.getAvailableGoals();
+            if (avail == null) return;
+            for (Object entry : avail) {
+                try {
+                    if (entry instanceof WrappedGoal wrap) {
+                        Goal goal = wrap.getGoal();
+                        if (goal == null) continue;
+                        String name = goal.getClass().getName();
+                        if (name.equals(RecruitRangedGunnerAttackGoal.class.getName())
+                                || name.equals(RecruitAmmoResupplyGoal.class.getName())) {
+                            mob.goalSelector.removeGoal(goal);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("removeAllCustomGoals failed", t);
+        }
+    }
+
+    /** Removes and caches competing vanilla attack goals (Recruits mod musket/crossbow goals). */
+    private static void removeAndStoreCompetingGoals(PathfinderMob mob) {
         List<RemovedGoal> stored = removedGoals.get(mob);
         if (stored == null) stored = Collections.synchronizedList(new ArrayList<>());
 
@@ -125,35 +215,11 @@ public final class RecruitGoalOverrideHandler {
         }
 
         if (!stored.isEmpty()) removedGoals.put(mob, stored);
-
-        // Add fallback goal if missing
-        if (!hasFallback) {
-            int priority = 0; // adjust priority as needed for your AI stack
-            mob.goalSelector.addGoal(priority, new RecruitRangedGunnerAttackGoal(mob));
-            LOGGER.info("Added fallback RecruitRangedGunnerAttackGoal to {}", mob);
-        }
     }
 
     private static void restoreOriginalGoalsIfAny(PathfinderMob mob) {
-        // Remove fallback(s)
-        try {
-            Collection<?> avail = mob.goalSelector.getAvailableGoals();
-            if (avail != null) {
-                for (Object entry : avail) {
-                    try {
-                        if (entry instanceof WrappedGoal wrap) {
-                            Goal goal = wrap.getGoal();
-                            if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
-                                mob.goalSelector.removeGoal(goal);
-                                LOGGER.info("Removed fallback RecruitRangedGunnerAttackGoal from {}", mob);
-                            }
-                        }
-                    } catch (Throwable ignored) {}
-                }
-            }
-        } catch (Throwable t) {
-            LOGGER.debug("Error removing fallback", t);
-        }
+        // Remove all JMTEG custom goals (both attack and resupply)
+        removeAllCustomGoals(mob);
 
         // Restore stored original goals (if present)
         List<RemovedGoal> stored = removedGoals.remove(mob);
