@@ -291,12 +291,8 @@ public final class RecruitGoalOverrideHandler {
      * removes the first one found.  This prevents the Recruits mod from re-syncing the
      * shield back into the offhand slot after the equipment slot has been cleared.
      * Safe to call when the Recruits mod is absent; all exceptions are swallowed.
-     *
-     * <p>Note: Method lookups are intentionally not cached here because this method is
-     * called at most once per shield-drop event (an infrequent, non-hot-path operation).</p>
      */
     static void tryRemoveShieldFromRecruitInventory(PathfinderMob mob) {
-        if (mob == null) return;
         try {
             Object inv = ReflectionCache.tryGetInventoryObject(mob);
             if (inv == null) return;
