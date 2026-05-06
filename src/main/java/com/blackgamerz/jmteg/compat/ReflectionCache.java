@@ -94,7 +94,7 @@ public final class ReflectionCache {
 
         // ── Gun ammo helpers ───────────────────────────────────────────────
         if (jegCommonGunClass != null) {
-            try { jeg_findAmmoStack        = jegCommonGunClass.getMethod("findAmmoStack", ItemStack.class); } catch (Throwable ignored) {}
+            try { jeg_findAmmoStack = jegCommonGunClass.getMethod("findAmmoStack", ItemStack.class); } catch (Throwable ignored) {}
             try { jeg_shrinkFromAmmoPool_1 = jegCommonGunClass.getMethod("shrinkFromAmmoPool", ItemStack.class, int.class); } catch (Throwable ignored) {}
             try { jeg_shrinkFromAmmoPool_2 = jegCommonGunClass.getMethod("shrinkFromAmmoPool", net.minecraft.world.entity.PathfinderMob.class, ItemStack.class, int.class); } catch (Throwable ignored) {}
 

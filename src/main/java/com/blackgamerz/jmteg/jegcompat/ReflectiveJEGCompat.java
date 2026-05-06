@@ -184,8 +184,8 @@ public class ReflectiveJEGCompat implements IJEGCompat {
             Object proj = gunGetProjectileMethod.invoke(gun);
             if (proj == null) return 0.04f;
             Object val = projectileIsGravityMethod.invoke(proj);
-            // isGravity() == true  → use standard gravity constant
-            // isGravity() == false → projectile is not affected by gravity
+            // isGravity() == true  -> use standard gravity constant
+            // isGravity() == false -> projectile is not affected by gravity
             return Boolean.TRUE.equals(val) ? 0.04f : 0.0f;
         } catch (Throwable ignored) {
             return 0.04f;
