@@ -1,8 +1,11 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
@@ -18,8 +21,9 @@ import java.util.EnumSet;
 import java.util.List;
 
 /**
- * Movement/aim-only fallback for recruits holding JEG guns.
- * Shooting and reload are handled by the injected JEG GunAttackGoal (MobAiInjector).
+ * Movement/aim/fire/reload goal for recruits holding JEG guns.
+ * Shooting and reload are now self-contained: JEG's GunAttackGoal is NOT relied upon
+ * for these recruits (see MobAiInjectorReflection which skips injection for recruits).
  *
  * Enhancements included:
  * - Precise yaw/pitch application (instead of mob.lookAt)
@@ -42,6 +46,11 @@ import java.util.List;
  *   closes on the nearest threat, TACTICAL_RANGED hunts exposed / low-health targets, HEAVY
  *   walks into the largest enemy cluster, and UTILITY recruits prioritise enemies that are
  *   actively attacking nearby allies.
+ * - Self-contained firing: on AIM→COOLDOWN the goal calls JEGCompatManager.INSTANCE to spawn
+ *   projectiles, consume ammo, eject the casing, and play the fire sound.
+ * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
+ *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
+ *   bubble-ammo reload indicator particle in the meantime.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -50,7 +59,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private final PathfinderMob mob;
 
-    private enum State { IDLE, SEEK, AIM, COOLDOWN }
+    private enum State { IDLE, SEEK, AIM, COOLDOWN, RELOADING }
     private State state = State.IDLE;
 
     // ── Role-profile cache ────────────────────────────────────────────────────
@@ -323,19 +332,41 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
                 aimTimer--;
                 if (aimTimer <= 0) {
-                    // Exiting AIM — restore spread before letting the GunAttackGoal run
+                    // Exiting AIM — restore spread before firing.
                     disableAdsOnHeldGun();
-                    // The injected JEG GunAttackGoal will perform the actual firing.
-                    cooldownTimer = computeCooldownTicks(dist);
-                    state = State.COOLDOWN;
+                    if (isGunLoaded()) {
+                        // Fire the shot via JEG, then cool down before next aim cycle.
+                        fireShot(target);
+                        cooldownTimer = computeCooldownTicks(dist);
+                        state = State.COOLDOWN;
+                    } else {
+                        // Out of ammo — wait for reload.
+                        state = State.RELOADING;
+                    }
                 }
             }
             case COOLDOWN -> {
                 cooldownTimer--;
                 if (cooldownTimer <= 0) {
+                    if (isGunLoaded()) {
+                        state = State.AIM;
+                        aimTimer = computeAimTicks(dist);
+                        enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
+                    } else {
+                        // Ran out of ammo during cooldown — switch to reload wait.
+                        state = State.RELOADING;
+                    }
+                }
+            }
+            case RELOADING -> {
+                // Stand still and wait until GunSyncGoal / RecruitAmmoResupplyGoal reloads the gun.
+                mob.getNavigation().stop();
+                if (isGunLoaded()) {
                     state = State.AIM;
                     aimTimer = computeAimTicks(dist);
-                    enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
+                    enableAdsOnHeldGun();
+                } else {
+                    sendReloadBubble();
                 }
             }
         }
@@ -365,6 +396,89 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private static double clamp(double v, double a, double b) {
         return v < a ? a : (v > b ? b : v);
     }
+
+    // ── Firing ────────────────────────────────────────────────────────────────
+
+    /**
+     * Fires one shot at {@code target} using the held JEG gun:
+     * <ol>
+     *   <li>Resolves the {@code Gun} object via {@link JEGCompatManager#INSTANCE}.</li>
+     *   <li>Delegates projectile spawning to {@code AIGunEvent.performGunAttack}.</li>
+     *   <li>Decrements {@code AmmoCount} in the stack NBT.</li>
+     *   <li>Ejects a casing via {@code GunEventBus.ejectCasing}.</li>
+     *   <li>Plays the gun's fire sound, if set.</li>
+     * </ol>
+     * All steps are individually guarded; a failure in one does not prevent the others.
+     */
+    private void fireShot(LivingEntity target) {
+        ItemStack stack = mob.getMainHandItem();
+        if (stack == null || stack.isEmpty()) return;
+
+        Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+        if (gun == null) return;
+
+        // Spawn projectile(s). Use a minimal spread so the ADS reduction is already in NBT;
+        // passing 1.0f lets JEG's own difficulty/spread multipliers handle any remaining bloom.
+        float spread = computeAdsSpreadMultiplier();
+        JEGCompatManager.INSTANCE.performGunAttack(mob, target, stack, gun, spread, false);
+
+        // Consume one ammo unit from the stack.
+        JustEnoughGunsCompat.consumeAmmoOnGun(stack);
+
+        // Eject brass / shell.
+        JEGCompatManager.INSTANCE.ejectCasing(mob.level(), mob);
+
+        // Play the configured fire sound, if any.
+        ResourceLocation fireSound = JEGCompatManager.INSTANCE.getFireSound(gun);
+        if (fireSound != null) {
+            mob.level().playSound(null, mob.getX(), mob.getY(), mob.getZ(),
+                    SoundEvent.createVariableRangeEvent(fireSound),
+                    SoundSource.HOSTILE, 0.5f, 0.9f + mob.getRandom().nextFloat() * 0.2f);
+        }
+    }
+
+    /**
+     * Returns {@code true} when the held gun has at least one ammo unit remaining.
+     * Reads {@code AmmoCount} from the stack's NBT; returns {@code false} on any error
+     * so the recruit enters the RELOADING state rather than firing with an empty gun.
+     */
+    private boolean isGunLoaded() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return false;
+            CompoundTag tag = stack.getTag();
+            return tag != null && tag.contains("AmmoCount") && tag.getInt("AmmoCount") > 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Emits the JEG reload-indicator particle ({@code jeg:bubble_ammo}) above the mob's
+     * head, mirroring the visual feedback JEG's own {@code GunAttackGoal} produces while
+     * reloading.  Guarded by a registry-key check so it silently no-ops when JEG is absent.
+     */
+    private void sendReloadBubble() {
+        try {
+            ResourceLocation bubbleKey = new ResourceLocation("jeg", "bubble_ammo");
+            if (!BuiltInRegistries.PARTICLE_TYPE.containsKey(bubbleKey)) return;
+            if (mob.level().isClientSide()) return;
+            // Cast to ServerLevel to call sendParticles — safe since isClientSide() == false.
+            net.minecraft.server.level.ServerLevel serverLevel =
+                    (net.minecraft.server.level.ServerLevel) mob.level();
+            net.minecraft.core.particles.ParticleOptions particle =
+                    (net.minecraft.core.particles.ParticleOptions)
+                            BuiltInRegistries.PARTICLE_TYPE.get(bubbleKey).deserializeParticle(
+                                    new com.mojang.brigadier.StringReader(""));
+            serverLevel.sendParticles(particle,
+                    mob.getX(), mob.getY() + mob.getEyeHeight() + 0.9, mob.getZ(),
+                    1, 0.0, 0.0, 0.0, 0.0);
+        } catch (Throwable ignored) {
+            // Particle emission is purely cosmetic — never crash on failure.
+        }
+    }
+
+    // ── ADS (Aim-Down-Sights) spread helpers ──────────────────────────────────
 
     /**
      * Temporarily reduce the held gun's stored spread in NBT so JEG will treat it as "aiming".
