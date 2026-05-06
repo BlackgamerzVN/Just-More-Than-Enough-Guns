@@ -2,11 +2,15 @@ package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ShieldItem;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -75,6 +79,9 @@ public final class RecruitGoalOverrideHandler {
      */
     public static void evaluateAndApplyForMob(PathfinderMob mob) {
         if (mob == null || mob.level().isClientSide) return;
+
+        // Proactively remove shield if the recruit is holding a two-handed (non-SIDEARM) JEG gun
+        proactivelyUnequipShieldIfNeeded(mob);
 
         ItemStack main = mob.getMainHandItem();
         boolean hasJegGun = main != null && !main.isEmpty() && JustEnoughGunsCompat.isJegGun(main);
@@ -251,4 +258,47 @@ public final class RecruitGoalOverrideHandler {
      * you can enable a server tick handler that periodically re-evaluates tracked mobs. This reduces the chance of
      * desynchronisation but has some cost. Implementing that was previously shown; leave disabled unless needed.
      */
+
+    /**
+     * Removes the shield from the mob's offhand slot and drops it as a world item.
+     * Safe to call at any time; does nothing if no shield is present.
+     */
+    public static void unequipShieldIfPresent(PathfinderMob mob) {
+        if (mob == null || mob.level().isClientSide) return;
+        try {
+            ItemStack offhand = mob.getOffhandItem();
+            if (!offhand.isEmpty() && offhand.getItem() instanceof ShieldItem) {
+                mob.spawnAtLocation(offhand);
+                mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+                LOGGER.debug("Dropped shield from offhand of {}", mob);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("unequipShieldIfPresent failed", t);
+        }
+    }
+
+    /**
+     * Checks whether the mob is holding a two-handed JEG gun (non-SIDEARM role) and,
+     * if so, drops any shield in the offhand.  SIDEARM recruits (pistols) may keep
+     * their shield since the weapon is one-handed.
+     */
+    public static void proactivelyUnequipShieldIfNeeded(PathfinderMob mob) {
+        if (mob == null || mob.level().isClientSide) return;
+        try {
+            ItemStack main = mob.getMainHandItem();
+            if (main == null || main.isEmpty() || !JustEnoughGunsCompat.isJegGun(main)) return;
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(main.getItem());
+            if (id == null) return;
+            RecruitLoadoutConfigManager.ensureLoaded();
+            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
+            RecruitLoadoutConfigManager.RecruitTierConfig tier =
+                    RecruitLoadoutConfigManager.getTierConfig(classKey);
+            RecruitGunRole role = RecruitGunSelector.detectRole(id, tier);
+            if (role != RecruitGunRole.SIDEARM) {
+                unequipShieldIfPresent(mob);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("proactivelyUnequipShieldIfNeeded failed", t);
+        }
+    }
 }

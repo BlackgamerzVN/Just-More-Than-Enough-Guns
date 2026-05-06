@@ -3,12 +3,15 @@ package com.blackgamerz.jmteg.recruitcompat;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ShieldItem;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -193,6 +196,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     public void stop() {
         // ensure we remove any temporary ADS modifier when goal stops
         disableAdsOnHeldGun();
+        // lower shield if it was raised
+        if (mob.isUsingItem()) mob.stopUsingItem();
         mob.getNavigation().stop();
         this.state = State.IDLE;
     }
@@ -219,12 +224,17 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // Re-score nearby enemies on the same cadence as the profile refresh so the
             // recruit shifts to a tactically appropriate target without per-tick scanning.
             pickBestRoleAwareTarget();
+            // Drop shield for two-handed weapons (non-SIDEARM); SIDEARM recruits keep theirs.
+            if (cachedRole != RecruitGunRole.SIDEARM) {
+                RecruitGoalOverrideHandler.unequipShieldIfPresent(mob);
+            }
         }
 
         LivingEntity target = mob.getTarget();
         if (target == null || !target.isAlive()) {
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
+            if (mob.isUsingItem()) mob.stopUsingItem();
             state = State.IDLE;
             return;
         }
@@ -338,6 +348,11 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
                 }
             }
+        }
+
+        // SIDEARM (pistol) shield management: raise when threatened, lower while aiming.
+        if (cachedRole == RecruitGunRole.SIDEARM) {
+            manageShieldForSidearm(target, dist);
         }
     }
 
@@ -873,5 +888,58 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         LivingEntity enemyTarget = enemyMob.getTarget();
         if (enemyTarget == null) return 0.0;
         return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
+    }
+
+    // ── Shield management (SIDEARM only) ─────────────────────────────────────
+
+    /**
+     * Raises or lowers the offhand shield for a SIDEARM (pistol) recruit.
+     *
+     * <ul>
+     *   <li>While in {@link State#AIM}: shield is lowered so the recruit can aim.</li>
+     *   <li>When the enemy is within {@code safeDistance × 1.5} or an incoming
+     *       projectile is detected within 10 blocks: shield is raised.</li>
+     *   <li>Otherwise: shield is lowered.</li>
+     * </ul>
+     *
+     * Does nothing if the recruit has no shield in their offhand.
+     */
+    private void manageShieldForSidearm(LivingEntity target, double dist) {
+        ItemStack offhand = mob.getOffhandItem();
+        if (offhand.isEmpty() || !(offhand.getItem() instanceof ShieldItem)) return;
+
+        if (state == State.AIM) {
+            // Lower shield while aiming so the gun can be fired
+            if (mob.isUsingItem()) mob.stopUsingItem();
+            return;
+        }
+
+        double threshold = currentProfile.safeDistance * 1.5;
+        boolean enemyClose = dist <= threshold;
+        boolean incoming   = hasIncomingProjectile(10.0);
+
+        if (enemyClose || incoming) {
+            if (!mob.isUsingItem()) mob.startUsingItem(InteractionHand.OFF_HAND);
+        } else {
+            if (mob.isUsingItem()) mob.stopUsingItem();
+        }
+    }
+
+    /**
+     * Returns {@code true} if any {@link Projectile} within {@code radius} blocks
+     * is moving roughly toward this mob (dot product of velocity and mob direction &gt; 0.5).
+     */
+    private boolean hasIncomingProjectile(double radius) {
+        return !mob.level().getEntitiesOfClass(
+                Projectile.class,
+                mob.getBoundingBox().inflate(radius),
+                p -> {
+                    Vec3 vel = p.getDeltaMovement();
+                    if (vel.lengthSqr() < 1e-6) return false;
+                    Vec3 toMob = mob.position().subtract(p.position());
+                    if (toMob.lengthSqr() < 1e-6) return true;
+                    return vel.normalize().dot(toMob.normalize()) > 0.5;
+                }
+        ).isEmpty();
     }
 }
