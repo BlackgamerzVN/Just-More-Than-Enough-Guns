@@ -10,13 +10,11 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
 
@@ -96,8 +94,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private static final int MAX_COOLDOWN_TICKS = 40;
 
     // Reflection / physics fallbacks if JEG not available or we can't read values
-    private static final float DEFAULT_PROJECTILE_SPEED = 3.0f; // blocks per tick (fallback)
-    private static final float DEFAULT_PROJECTILE_GRAVITY = 0.04f; // positive magnitude (fallback)
+    // (ballistic defaults are now provided by ReflectiveJEGCompat / StubJEGCompat via JEGCompatManager)
 
     // Downward bias (degrees) to reduce overshooting; increase to aim lower
     private static final float AIM_DOWN_BIAS_DEGREES = 200.0f;
@@ -340,9 +337,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
                 float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
 
-                // Extract projectile properties (try JEG via reflection with multiple fallbacks)
-                float projectileSpeed = getHeldProjectileSpeed(mob);
-                float projectileGravity = getHeldProjectileGravity(mob);
+                // Extract projectile properties through the established JEG compat boundary.
+                float projectileSpeed = JEGCompatManager.INSTANCE.getProjectileSpeed(mob.getMainHandItem());
+                float projectileGravity = JEGCompatManager.INSTANCE.getProjectileGravity(mob.getMainHandItem());
 
                 // Aim accounting for target motion and gravity
                 applyAdvancedAim(mob, target, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
@@ -802,104 +799,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private float computeAdsSpreadMultiplier() {
         double weight = getHeldGunWeight();
         return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - weight));
-    }
-
-    /**
-     * Robust extraction of projectile base speed from held JEG gun using reflection.
-     * Returns DEFAULT_PROJECTILE_SPEED on any failure.
-     */
-    private static float getHeldProjectileSpeed(PathfinderMob mob) {
-        try {
-            ItemStack main = mob.getMainHandItem();
-            if (main == null || main.isEmpty()) return DEFAULT_PROJECTILE_SPEED;
-            Item item = main.getItem();
-
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            if (!jegGunItemClass.isInstance(item)) return DEFAULT_PROJECTILE_SPEED;
-
-            Method getModifiedGun = jegGunItemClass.getMethod("getModifiedGun", ItemStack.class);
-            Object gunObj = getModifiedGun.invoke(item, main);
-            if (gunObj == null) return DEFAULT_PROJECTILE_SPEED;
-
-            // Try gun.getProjectile().getSpeed()
-            try {
-                Method getProjectile = gunObj.getClass().getMethod("getProjectile");
-                Object projObj = getProjectile.invoke(gunObj);
-                if (projObj != null) {
-                    try {
-                        Method getSpeed = projObj.getClass().getMethod("getSpeed");
-                        Object val = getSpeed.invoke(projObj);
-                        if (val instanceof Number) return ((Number) val).floatValue();
-                    } catch (NoSuchMethodException ignored) {
-                    }
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-
-            // Fallback: gun.getProjectileSpeed()
-            try {
-                Method mg = gunObj.getClass().getMethod("getProjectileSpeed");
-                Object val = mg.invoke(gunObj);
-                if (val instanceof Number) return ((Number) val).floatValue();
-            } catch (Throwable ignored) {
-            }
-
-        } catch (Throwable ignored) {
-        }
-        return DEFAULT_PROJECTILE_SPEED;
-    }
-
-    /**
-     * Robust extraction of projectile gravity from held JEG gun using reflection.
-     * Returns a positive gravity magnitude appropriate for use in projectile formulas.
-     * If projectile has gravity disabled returns 0.0f.
-     * On failures returns DEFAULT_PROJECTILE_GRAVITY.
-     */
-    private static float getHeldProjectileGravity(PathfinderMob mob) {
-        try {
-            ItemStack main = mob.getMainHandItem();
-            if (main == null || main.isEmpty()) return DEFAULT_PROJECTILE_GRAVITY;
-            Item item = main.getItem();
-
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            if (!jegGunItemClass.isInstance(item)) return DEFAULT_PROJECTILE_GRAVITY;
-
-            Method getModifiedGun = jegGunItemClass.getMethod("getModifiedGun", ItemStack.class);
-            Object gunObj = getModifiedGun.invoke(item, main);
-            if (gunObj == null) return DEFAULT_PROJECTILE_GRAVITY;
-
-            // Try projectile.getGravity()
-            try {
-                Method getProjectile = gunObj.getClass().getMethod("getProjectile");
-                Object projObj = getProjectile.invoke(gunObj);
-                if (projObj != null) {
-                    try {
-                        Method mg = projObj.getClass().getMethod("getGravity");
-                        Object val = mg.invoke(projObj);
-                        if (val instanceof Number) {
-                            double g = ((Number) val).doubleValue();
-                            return (float) Math.abs(g);
-                        }
-                    } catch (NoSuchMethodException ignored) {
-                    }
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-
-            // Fallback: gunObj.getProjectileGravity() or similar method/field
-            try {
-                Method mg = gunObj.getClass().getMethod("getProjectileGravity");
-                Object val = mg.invoke(gunObj);
-                if (val instanceof Number) {
-                    double g = ((Number) val).doubleValue();
-                    return (float) Math.abs(g);
-                }
-            } catch (Throwable ignored) {
-            }
-
-        } catch (Throwable ignored) {
-        }
-        return DEFAULT_PROJECTILE_GRAVITY;
     }
 
     // ── Role-aware target selection ───────────────────────────────────────────
