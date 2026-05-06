@@ -268,9 +268,8 @@ public final class RecruitGoalOverrideHandler {
         try {
             ItemStack offhand = mob.getOffhandItem();
             if (!offhand.isEmpty() && offhand.getItem() instanceof ShieldItem) {
-                // Clear the slot first so the state is consistent even if spawnAtLocation throws
-                mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
                 mob.spawnAtLocation(offhand);
+                mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
                 LOGGER.debug("Dropped shield from offhand of {}", mob);
             }
         } catch (Throwable t) {
