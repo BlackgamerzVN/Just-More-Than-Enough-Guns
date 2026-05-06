@@ -18,7 +18,6 @@ import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-
 import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
@@ -894,6 +893,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     // ── Shield management ─────────────────────────────────────────────────────
 
+    /**
+     * Multiplier applied to {@link RecruitRoleProfile#safeDistance} to define the
+     * range at which a SIDEARM recruit raises its shield against a close-range threat.
+     */
+    private static final double SHIELD_RAISE_RANGE_FACTOR = 1.5;
+
     /** Radius (blocks) within which incoming {@link Projectile}s trigger a shield raise. */
     private static final double SHIELD_PROJECTILE_SCAN_RADIUS = 10.0;
 
@@ -908,11 +913,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     /**
      * Per-tick shield state management for SIDEARM recruits that carry a shield:
      * <ul>
-     *   <li>Raises the shield (starts using offhand item) when there is an active target
-     *       or an incoming hostile projectile is detected.  JEG guns fire from the mainhand
-     *       so the offhand shield does not interfere with shooting.</li>
-     *   <li>Lowers the shield (stops using item) when there is no target and no incoming
-     *       projectile.</li>
+     *   <li>Raises the shield (starts using offhand item) when a close enemy or an
+     *       incoming projectile is detected — except while in the {@link State#AIM} state
+     *       where the shield must be lowered so the recruit can fire.</li>
+     *   <li>Lowers the shield (stops using item) at all other times.</li>
      * </ul>
      * For non-SIDEARM recruits, any currently active blocking is cancelled immediately;
      * the shield itself is physically removed by {@link #unequipShieldIfPresent()}.
@@ -923,8 +927,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             return;
         }
 
-        // JEG guns fire from the mainhand; the offhand shield does not interfere with firing,
-        // so we allow shield use in all states including AIM.
+        // During the AIM window the recruit needs a free hand to fire — lower the shield
+        if (state == State.AIM) {
+            if (mob.isUsingItem()) mob.stopUsingItem();
+            return;
+        }
+
         boolean shouldBlock = shouldRaiseShield();
         if (shouldBlock && !mob.isUsingItem()) {
             mob.startUsingItem(InteractionHand.OFF_HAND);
@@ -935,15 +943,16 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /**
      * Determines whether the SIDEARM recruit should currently raise its shield.
-     * Returns {@code true} whenever there is a live target (regardless of distance)
-     * or an incoming hostile projectile is detected within {@link #SHIELD_PROJECTILE_SCAN_RADIUS} blocks.
+     * Returns {@code true} when the current target is within close range
+     * ({@code safeDistance × SHIELD_RAISE_RANGE_FACTOR}) or an incoming projectile
+     * is detected within {@link #SHIELD_PROJECTILE_SCAN_RADIUS} blocks.
      */
     private boolean shouldRaiseShield() {
         LivingEntity target = mob.getTarget();
-        // Raise shield whenever there is an active target, regardless of distance.
-        // This gives the SIDEARM recruit a fighting chance to block while engaging.
         if (target != null && target.isAlive()) {
-            return true;
+            double dist = mob.distanceTo(target);
+            double shieldRange = currentProfile.safeDistance * SHIELD_RAISE_RANGE_FACTOR;
+            if (dist <= shieldRange) return true;
         }
         return detectIncomingProjectile();
     }
@@ -997,19 +1006,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (!hasShieldInOffhand()) return;
         ItemStack shield = mob.getOffhandItem().copy();
         mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
-        // Also clear from the Recruits SimpleContainer so the mod doesn't re-sync it back.
-        tryRemoveShieldFromRecruitInventory();
         mob.spawnAtLocation(shield);
         LOGGER.debug("Dropped shield from two-handed-gun recruit {}", mob);
-    }
-
-    /**
-     * Scans the Recruits mod SimpleContainer (via reflection) for a shield item and
-     * removes it.  This prevents the Recruits mod from re-syncing the shield back into
-     * the offhand slot after {@link #unequipShieldIfPresent()} clears the equipment slot.
-     * Safe to call when the Recruits mod is absent; all exceptions are swallowed.
-     */
-    private void tryRemoveShieldFromRecruitInventory() {
-        RecruitGoalOverrideHandler.tryRemoveShieldFromRecruitInventory(mob);
     }
 }
