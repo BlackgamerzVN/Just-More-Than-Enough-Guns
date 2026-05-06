@@ -141,6 +141,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     /** Distance offset preventing division-by-zero in the UTILITY distance component. */
     private static final double UTILITY_DISTANCE_OFFSET  = 0.1;
 
+    // Shield management (SIDEARM)
+    /** Dot-product threshold above which a projectile is considered to be flying toward the mob. */
+    private static final double INCOMING_PROJECTILE_DOT_THRESHOLD = 0.5;
+    /** Near-zero velocity squared threshold used to skip degenerate projectile motion checks. */
+    private static final double MIN_VELOCITY_SQ_THRESHOLD = 1e-6;
+    /** Near-zero distance squared threshold used to avoid normalizing a zero-length vector. */
+    private static final double MIN_DISTANCE_SQ_THRESHOLD = 1e-6;
+
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
     private static final String JMTEG_ORIG_SPREAD = "jmteg_original_spread";
@@ -196,8 +204,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     public void stop() {
         // ensure we remove any temporary ADS modifier when goal stops
         disableAdsOnHeldGun();
-        // lower shield if it was raised
-        if (mob.isUsingItem()) mob.stopUsingItem();
+        // lower shield if we were blocking with the offhand
+        if (mob.isUsingItem() && mob.getUsedItemHand() == InteractionHand.OFF_HAND) {
+            mob.stopUsingItem();
+        }
         mob.getNavigation().stop();
         this.state = State.IDLE;
     }
@@ -234,7 +244,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (target == null || !target.isAlive()) {
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
-            if (mob.isUsingItem()) mob.stopUsingItem();
+            if (mob.isUsingItem() && mob.getUsedItemHand() == InteractionHand.OFF_HAND) {
+                mob.stopUsingItem();
+            }
             state = State.IDLE;
             return;
         }
@@ -908,9 +920,13 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         ItemStack offhand = mob.getOffhandItem();
         if (offhand.isEmpty() || !(offhand.getItem() instanceof ShieldItem)) return;
 
+        // Determine whether the mob is currently blocking with the offhand shield specifically
+        boolean usingOffhandShield = mob.isUsingItem()
+                && mob.getUsedItemHand() == InteractionHand.OFF_HAND;
+
         if (state == State.AIM) {
             // Lower shield while aiming so the gun can be fired
-            if (mob.isUsingItem()) mob.stopUsingItem();
+            if (usingOffhandShield) mob.stopUsingItem();
             return;
         }
 
@@ -921,13 +937,13 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (enemyClose || incoming) {
             if (!mob.isUsingItem()) mob.startUsingItem(InteractionHand.OFF_HAND);
         } else {
-            if (mob.isUsingItem()) mob.stopUsingItem();
+            if (usingOffhandShield) mob.stopUsingItem();
         }
     }
 
     /**
      * Returns {@code true} if any {@link Projectile} within {@code radius} blocks
-     * is moving roughly toward this mob (dot product of velocity and mob direction &gt; 0.5).
+     * is moving roughly toward this mob (dot product of velocity and mob direction &gt; {@link #INCOMING_PROJECTILE_DOT_THRESHOLD}).
      */
     private boolean hasIncomingProjectile(double radius) {
         return !mob.level().getEntitiesOfClass(
@@ -935,10 +951,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 mob.getBoundingBox().inflate(radius),
                 p -> {
                     Vec3 vel = p.getDeltaMovement();
-                    if (vel.lengthSqr() < 1e-6) return false;
+                    if (vel.lengthSqr() < MIN_VELOCITY_SQ_THRESHOLD) return false;
                     Vec3 toMob = mob.position().subtract(p.position());
-                    if (toMob.lengthSqr() < 1e-6) return true;
-                    return vel.normalize().dot(toMob.normalize()) > 0.5;
+                    if (toMob.lengthSqr() < MIN_DISTANCE_SQ_THRESHOLD) return true;
+                    return vel.normalize().dot(toMob.normalize()) > INCOMING_PROJECTILE_DOT_THRESHOLD;
                 }
         ).isEmpty();
     }
