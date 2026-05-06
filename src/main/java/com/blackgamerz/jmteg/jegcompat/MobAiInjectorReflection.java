@@ -28,6 +28,12 @@ public final class MobAiInjectorReflection {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getEntity() instanceof PathfinderMob mob)) return;
 
+        // Recruit entities are fully handled by RecruitGoalOverrideHandler + RecruitRangedGunnerAttackGoal.
+        // Injecting a separate GunAttackGoal here would create a competing priority-0 goal that
+        // conflicts with JMTEG's recruit attack goal (priority 1) and with the resupply goal (priority 0).
+        String fqcn = mob.getClass().getName();
+        if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
+
         try {
             // Try to load JEG classes. If any are missing, Class.forName will throw and we abort.
             Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");

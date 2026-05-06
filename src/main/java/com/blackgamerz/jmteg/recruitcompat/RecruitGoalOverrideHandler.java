@@ -202,6 +202,13 @@ public final class RecruitGoalOverrideHandler {
                                     stored.add(new RemovedGoal(goal, prio));
                                     mob.goalSelector.removeGoal(goal);
                                     LOGGER.info("Flagged & removed WrappedGoal {} from {}", name, mob);
+                                } else if (name.equals("ttv.migami.jeg.entity.ai.GunAttackGoal")) {
+                                    // Remove any JEG GunAttackGoal that was injected by MobAiInjectorReflection or
+                                    // JEG's own entity-join handler before the 2-tick deferred task ran.
+                                    // Do NOT store for restoration: RecruitRangedGunnerAttackGoal replaces it,
+                                    // and re-injection via EntityJoinLevelEvent is guarded on the other side.
+                                    mob.goalSelector.removeGoal(goal);
+                                    LOGGER.info("Removed JEG GunAttackGoal (no restore) from recruit {}", mob);
                                 }
                             }
                         }
