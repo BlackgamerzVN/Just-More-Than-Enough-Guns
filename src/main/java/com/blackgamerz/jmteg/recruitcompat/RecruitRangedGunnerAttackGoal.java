@@ -48,6 +48,9 @@ import java.util.List;
  *   actively attacking nearby allies.
  * - Self-contained firing: on AIM→COOLDOWN the goal calls JEGCompatManager.INSTANCE to spawn
  *   projectiles, consume ammo, eject the casing, and play the fire sound.
+ * - Burst-fire support: when the aim timer expires the recruit fires a random burst of 1–
+ *   {@value #MAX_BURST_COUNT} shots, spacing them by the gun's own fire rate between each shot.
+ *   Only after the full burst is exhausted does the goal enter COOLDOWN for the inter-burst pause.
  * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
  *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
  *   bubble-ammo reload indicator particle in the meantime.
@@ -104,6 +107,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // This is the best-case (weight=1.0) multiplier; inappropriate guns receive less benefit.
     private static final float ADS_SPREAD_MULTIPLIER = 0.025f;
 
+    // Burst-fire tuning ───────────────────────────────────────────────────────
+    /** Maximum shots that can be fired in one burst cycle (JEG uses 3 as its default). */
+    private static final int MAX_BURST_COUNT = 3;
+
     // Role-weight stat modifiers ──────────────────────────────────────────────
     // All four affect behaviour when the held gun is "inappropriate" for this recruit's tier
     // (i.e. its role-weight < 1.0).  At weight=1.0 these have no effect.
@@ -154,6 +161,12 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int aimTimer = 0;
     private int cooldownTimer = 0;
 
+    // Burst-fire state ─────────────────────────────────────────────────────────
+    /** Shots still to be fired in the current burst cycle (0 = no burst active). */
+    private int remainingBurstsInCycle = 0;
+    /** Ticks to wait before firing the next shot within an active burst. */
+    private int burstIntervalTick = 0;
+
     // strafing state
     private int strafeTimer = 0;
     private int strafeDirection = 1; // +1 = right, -1 = left
@@ -189,6 +202,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
+        remainingBurstsInCycle = 0;
+        burstIntervalTick = 0;
         strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
         // Force profile and doctrine re-detection on next tick so the goal starts with current info
@@ -204,6 +219,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         disableAdsOnHeldGun();
         mob.getNavigation().stop();
         this.state = State.IDLE;
+        remainingBurstsInCycle = 0;
+        burstIntervalTick = 0;
     }
 
     @Override
@@ -332,16 +349,32 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
                 aimTimer--;
                 if (aimTimer <= 0) {
-                    // Exiting AIM — restore spread before firing.
-                    disableAdsOnHeldGun();
-                    if (isGunLoaded()) {
-                        // Fire the shot via JEG, then cool down before next aim cycle.
-                        fireShot(target);
-                        cooldownTimer = computeCooldownTicks(dist);
-                        state = State.COOLDOWN;
+                    // Initialize burst cycle on first entry into the fire-ready phase.
+                    if (remainingBurstsInCycle <= 0) {
+                        remainingBurstsInCycle = 1 + mob.getRandom().nextInt(MAX_BURST_COUNT);
+                        burstIntervalTick = 0;    // fire first shot immediately
+                        disableAdsOnHeldGun();    // restore spread before firing
+                    }
+
+                    if (burstIntervalTick > 0) {
+                        burstIntervalTick--;
                     } else {
-                        // Out of ammo — wait for reload.
-                        state = State.RELOADING;
+                        if (isGunLoaded()) {
+                            fireShot(target);
+                            remainingBurstsInCycle--;
+                            if (remainingBurstsInCycle <= 0) {
+                                // Burst complete — enter inter-burst cooldown.
+                                cooldownTimer = computeCooldownTicks(dist);
+                                state = State.COOLDOWN;
+                            } else {
+                                // More shots remain in this burst — wait inter-shot interval.
+                                burstIntervalTick = computeBurstIntervalTicks();
+                            }
+                        } else {
+                            // Out of ammo mid-burst — abort burst and wait for reload.
+                            remainingBurstsInCycle = 0;
+                            state = State.RELOADING;
+                        }
                     }
                 }
             }
@@ -391,6 +424,24 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
         double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
         return (int) Math.round(base * penalty * conserve);
+    }
+
+    /**
+     * Returns the inter-shot delay (ticks) between shots within a burst cycle.
+     * Uses the held gun's fire rate ({@code Gun.General.getRate()}) as the interval so that
+     * burst cadence matches the gun's intended rate of fire, mirroring JEG's own behaviour
+     * where {@code attackTime} is reset to {@code getRate()} after each shot.
+     * Falls back to 1 tick on any error so the burst is never blocked.
+     */
+    private int computeBurstIntervalTicks() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack.isEmpty()) return 1;
+            Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+            return Math.max(1, JEGCompatManager.INSTANCE.getGunRate(gun));
+        } catch (Throwable ignored) {
+            return 1;
+        }
     }
 
     private static double clamp(double v, double a, double b) {
