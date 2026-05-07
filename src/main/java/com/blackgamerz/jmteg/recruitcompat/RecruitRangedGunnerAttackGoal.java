@@ -534,8 +534,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      */
     private void sendReloadBubble() {
         try {
-            ResourceLocation bubbleKey = ResourceLocation.fromNamespaceAndPath("jeg", "bubble_ammo");
             if (mob.level().isClientSide()) return;
+            ResourceLocation bubbleKey = ResourceLocation.fromNamespaceAndPath("jeg", "bubble_ammo");
 
             var particleType = BuiltInRegistries.PARTICLE_TYPE.get(bubbleKey);
             if (!(particleType instanceof net.minecraft.core.particles.SimpleParticleType simple)) return;
