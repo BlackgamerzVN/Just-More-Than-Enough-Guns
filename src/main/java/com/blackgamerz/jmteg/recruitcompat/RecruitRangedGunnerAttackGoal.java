@@ -109,7 +109,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // Burst-fire tuning ───────────────────────────────────────────────────────
     /** Maximum shots that can be fired in one burst cycle (JEG uses 3 as its default). */
     private static final int MAX_BURST_COUNT = 3;
-    /** Guns with max ammo >= this threshold are treated as high-capacity burst weapons. */
+    /** Guns with max ammo >= this threshold are treated as high-capacity burst weapons (typical rifle mags are around 20-30). */
     private static final int HIGH_CAPACITY_BURST_AMMO_THRESHOLD = 12;
     /** Minimum burst size enforced for high-capacity guns so they never fire a single-shot cycle. */
     private static final int MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN = 2;
