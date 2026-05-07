@@ -46,8 +46,9 @@ import java.util.List;
  *   actively attacking nearby allies.
  * - Self-contained firing: on AIM→COOLDOWN the goal calls JEGCompatManager.INSTANCE to spawn
  *   projectiles, consume ammo, eject the casing, and play the fire sound.
- * - Burst-fire support: when the aim timer expires the recruit fires a random burst of 1–
+ * - Burst-fire support: when the aim timer expires the recruit fires a burst of up to
  *   {@value #MAX_BURST_COUNT} shots, spacing them by the gun's own fire rate between each shot.
+ *   High-ammo-capacity guns are forced to use multi-shot bursts (never single-shot cycles).
  *   Only after the full burst is exhausted does the goal enter COOLDOWN for the inter-burst pause.
  * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
  *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
@@ -107,6 +108,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // Burst-fire tuning ───────────────────────────────────────────────────────
     /** Maximum shots that can be fired in one burst cycle (JEG uses 3 as its default). */
     private static final int MAX_BURST_COUNT = 3;
+    /** Guns with max ammo >= this threshold are treated as high-capacity burst weapons. */
+    private static final int HIGH_CAPACITY_BURST_AMMO_THRESHOLD = 12;
+    /** Minimum burst size enforced for high-capacity guns so they never fire a single-shot cycle. */
+    private static final int MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN = 2;
 
     // Role-weight stat modifiers ──────────────────────────────────────────────
     // All four affect behaviour when the held gun is "inappropriate" for this recruit's tier
@@ -353,7 +358,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 if (aimTimer <= 0) {
                     // Initialize burst cycle on first entry into the fire-ready phase.
                     if (remainingBurstsInCycle <= 0) {
-                        remainingBurstsInCycle = 1 + mob.getRandom().nextInt(MAX_BURST_COUNT);
+                        remainingBurstsInCycle = computeBurstShotsForCurrentGun();
                         burstIntervalTick = 0;    // fire first shot immediately
                         disableAdsOnHeldGun();    // restore spread before firing
                     }
@@ -451,6 +456,32 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         } catch (Throwable ignored) {
             return 1;
         }
+    }
+
+    /**
+     * Computes how many shots to fire in the next burst cycle.
+     * High-capacity guns are forced to multi-shot bursts; all others keep the original
+     * random 1..MAX_BURST_COUNT behavior.
+     */
+    private int computeBurstShotsForCurrentGun() {
+        int minBurstShots = 1;
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack != null && !stack.isEmpty()) {
+                Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+                int maxAmmo = JEGCompatManager.INSTANCE.getGunMaxAmmo(gun);
+                if (maxAmmo >= HIGH_CAPACITY_BURST_AMMO_THRESHOLD) {
+                    minBurstShots = Math.min(MAX_BURST_COUNT, MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN);
+                }
+            }
+        } catch (Throwable ignored) {
+            // keep default minimum burst size
+        }
+
+        if (minBurstShots >= MAX_BURST_COUNT) {
+            return MAX_BURST_COUNT;
+        }
+        return minBurstShots + mob.getRandom().nextInt(MAX_BURST_COUNT - minBurstShots + 1);
     }
 
     /**
