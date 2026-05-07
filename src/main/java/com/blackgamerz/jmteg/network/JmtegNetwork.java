@@ -23,7 +23,7 @@ public final class JmtegNetwork {
     private static final String PROTOCOL_VERSION = "1";
 
     private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
-            .named(new ResourceLocation(Main.MOD_ID, "main"))
+            .named(ResourceLocation.fromNamespaceAndPath(Main.MOD_ID, "main"))
             .networkProtocolVersion(() -> PROTOCOL_VERSION)
             .clientAcceptedVersions(PROTOCOL_VERSION::equals)
             .serverAcceptedVersions(PROTOCOL_VERSION::equals)
