@@ -48,7 +48,8 @@ import java.util.List;
  *   projectiles, consume ammo, eject the casing, and play the fire sound.
  * - Burst-fire support: when the aim timer expires the recruit fires a burst of up to
  *   {@value #MAX_BURST_COUNT} shots, spacing them by the gun's own fire rate between each shot.
- *   High-ammo-capacity guns are forced to use multi-shot bursts (never single-shot cycles).
+ *   High-ammo-capacity guns are forced to use at least
+ *   {@value #MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN} shots per burst (never single-shot cycles).
  *   Only after the full burst is exhausted does the goal enter COOLDOWN for the inter-burst pause.
  * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
  *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
@@ -471,17 +472,18 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
                 int maxAmmo = JEGCompatManager.INSTANCE.getGunMaxAmmo(gun);
                 if (maxAmmo >= HIGH_CAPACITY_BURST_AMMO_THRESHOLD) {
-                    minBurstShots = Math.min(MAX_BURST_COUNT, MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN);
+                    minBurstShots = MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN;
                 }
             }
         } catch (Throwable ignored) {
             // keep default minimum burst size
         }
 
-        if (minBurstShots >= MAX_BURST_COUNT) {
+        int effectiveMinBurstShots = (int) clamp(minBurstShots, 1, MAX_BURST_COUNT);
+        if (effectiveMinBurstShots >= MAX_BURST_COUNT) {
             return MAX_BURST_COUNT;
         }
-        return minBurstShots + mob.getRandom().nextInt(MAX_BURST_COUNT - minBurstShots + 1);
+        return effectiveMinBurstShots + mob.getRandom().nextInt(MAX_BURST_COUNT - effectiveMinBurstShots + 1);
     }
 
     /**
