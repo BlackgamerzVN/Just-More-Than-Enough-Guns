@@ -508,21 +508,19 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      */
     private void sendReloadBubble() {
         try {
-            ResourceLocation bubbleKey = new ResourceLocation("jeg", "bubble_ammo");
-            if (!BuiltInRegistries.PARTICLE_TYPE.containsKey(bubbleKey)) return;
-            if (mob.level().isClientSide()) return;
-            // Cast to ServerLevel to call sendParticles — safe since isClientSide() == false.
+            ResourceLocation bubbleKey = ResourceLocation.fromNamespaceAndPath("jeg", "bubble_ammo");            if (mob.level().isClientSide()) return;
+
+            var particleType = BuiltInRegistries.PARTICLE_TYPE.get(bubbleKey);
+            if (!(particleType instanceof net.minecraft.core.particles.SimpleParticleType simple)) return;
+
             net.minecraft.server.level.ServerLevel serverLevel =
                     (net.minecraft.server.level.ServerLevel) mob.level();
-            net.minecraft.core.particles.ParticleOptions particle =
-                    (net.minecraft.core.particles.ParticleOptions)
-                            BuiltInRegistries.PARTICLE_TYPE.get(bubbleKey).deserializeParticle(
-                                    new com.mojang.brigadier.StringReader(""));
-            serverLevel.sendParticles(particle,
+
+            serverLevel.sendParticles(simple,
                     mob.getX(), mob.getY() + mob.getEyeHeight() + 0.9, mob.getZ(),
                     1, 0.0, 0.0, 0.0, 0.0);
         } catch (Throwable ignored) {
-            // Particle emission is purely cosmetic — never crash on failure.
+            // cosmetic only
         }
     }
 
