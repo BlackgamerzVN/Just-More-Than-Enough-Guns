@@ -194,6 +194,8 @@ public class ReflectiveJEGCompat implements IJEGCompat {
 
     @Override
     public int getReloadTicks(ItemStack stack) {
-        return getGunReloadTimer(getModifiedGun(stack));
+        Object gun = getModifiedGun(stack);
+        if (gun == null) return 20;
+        return getGunReloadTimer(gun);
     }
 }
