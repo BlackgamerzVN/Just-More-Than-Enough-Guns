@@ -79,7 +79,8 @@ public interface IJEGCompat {
      * Returns the reload duration in ticks for the given gun stack.
      * Convenience wrapper: calls {@link #getModifiedGun(ItemStack)} then
      * {@link #getGunReloadTimer(Object)}.
-     * Returns {@code 0} if JEG is absent or the value cannot be read.
+     * Returns {@code 0} if no reload timer is available (for example: gun unavailable,
+     * JEG absent, or value unreadable).
      */
     int getReloadTicks(ItemStack gun);
 }
