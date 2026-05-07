@@ -100,6 +100,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     // Downward bias (degrees) to reduce overshooting; increase to aim lower
     private static final float AIM_DOWN_BIAS_DEGREES = 200.0f;
+    private static final float AIM_DOWN_BIAS_DEGREES_SQR = AIM_DOWN_BIAS_DEGREES * AIM_DOWN_BIAS_DEGREES;
 
     // ADS-like spread multiplier: while AIMing the gun's stored spread will be multiplied by this.
     // 1.0 = no change, 0.5 = half spread (more accurate). Tweak to your taste.
@@ -725,7 +726,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
 
         // Apply a small downward bias to counter systematic overshoot and clamp
-        pitchDeg += AIM_DOWN_BIAS_DEGREES;
+        pitchDeg += AIM_DOWN_BIAS_DEGREES_SQR;
         if (pitchDeg > 90.0) pitchDeg = 90.0;
         if (pitchDeg < -90.0) pitchDeg = -90.0;
 
