@@ -78,21 +78,34 @@ public final class RecruitDoctrineHolder {
 
     private RecruitDoctrineHolder() {}
 
+    /** Describes where a recruit's current doctrine is coming from. */
+    public enum DoctrineSource {
+        PERSONAL,
+        COMMANDER,
+        NONE
+    }
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Returns the active {@link RecruitDoctrine} for this recruit, checking (in
-     * priority order):
-     * <ol>
-     *   <li>Runtime cache (fast path, avoids repeated NBT reads)</li>
-     *   <li>The mob's own persistent-data NBT</li>
-     *   <li>The commander entity's persistent-data NBT (squad inheritance)</li>
-     * </ol>
-     * Returns {@code null} when no doctrine is set at any level.
+     * Returns the currently effective doctrine for this recruit.
+     * This is a compatibility alias for {@link #getEffectiveDoctrine(PathfinderMob)}.
      *
      * @param mob the recruit; {@code null} returns {@code null}
+     * @return the effective doctrine (personal override first, else commander), or {@code null}
      */
     public static RecruitDoctrine getDoctrine(PathfinderMob mob) {
+        return getEffectiveDoctrine(mob);
+    }
+
+    /**
+     * Returns only the recruit's own doctrine assignment from cache/NBT.
+     * Commander inheritance is intentionally ignored.
+     *
+     * @param mob the recruit; {@code null} returns {@code null}
+     * @return the personal doctrine override stored on the recruit, or {@code null}
+     */
+    public static RecruitDoctrine getPersonalDoctrine(PathfinderMob mob) {
         if (mob == null) return null;
 
         // 1. Runtime cache
@@ -108,9 +121,40 @@ public final class RecruitDoctrineHolder {
                 return parsed;
             }
         }
+        return null;
+    }
 
-        // 3. Commander inheritance (squad-level doctrine)
+    /**
+     * Returns the doctrine that should actively affect the recruit:
+     * personal override first, then commander inheritance.
+     *
+     * @param mob the recruit; {@code null} returns {@code null}
+     * @return the active doctrine after applying personal/commander precedence, or {@code null}
+     */
+    public static RecruitDoctrine getEffectiveDoctrine(PathfinderMob mob) {
+        RecruitDoctrine personal = getPersonalDoctrine(mob);
+        if (personal != null) {
+            return personal;
+        }
         return tryInheritFromCommander(mob);
+    }
+
+    /**
+     * Returns the current effective doctrine source for UI/status display.
+     *
+     * @param mob the recruit; {@code null} resolves to {@link DoctrineSource#NONE}
+     * @return {@link DoctrineSource#PERSONAL} for per-recruit override,
+     *         {@link DoctrineSource#COMMANDER} for inherited squad doctrine,
+     *         or {@link DoctrineSource#NONE} when unset
+     */
+    public static DoctrineSource getDoctrineSource(PathfinderMob mob) {
+        if (getPersonalDoctrine(mob) != null) {
+            return DoctrineSource.PERSONAL;
+        }
+        if (tryInheritFromCommander(mob) != null) {
+            return DoctrineSource.COMMANDER;
+        }
+        return DoctrineSource.NONE;
     }
 
     /**
@@ -177,8 +221,7 @@ public final class RecruitDoctrineHolder {
         if (!player.isShiftKeyDown()) return;
         if (!player.getMainHandItem().isEmpty()) return;
         if (!(event.getTarget() instanceof PathfinderMob recruit)) return;
-        if (!RecruitOwnershipHelper.isAmmoAwareRecruit(recruit)) return;
-        if (!isOwnedByPlayer(recruit, player)) return;
+        if (!canPlayerEditDoctrine(recruit, player)) return;
 
         // Determine the recruit's current personal doctrine (ignoring inherited ones)
         String personal = recruit.getPersistentData().getString(RecruitDoctrine.NBT_KEY);
@@ -279,6 +322,17 @@ public final class RecruitDoctrineHolder {
             } catch (Exception ignored) {}
         }
         return false;
+    }
+
+    /**
+     * Returns {@code true} if this player can change the recruit doctrine.
+     * This intentionally matches shift-right-click behavior and packet checks.
+     */
+    public static boolean canPlayerEditDoctrine(PathfinderMob mob, Player player) {
+        return mob != null
+                && player != null
+                && RecruitOwnershipHelper.isAmmoAwareRecruit(mob)
+                && isOwnedByPlayer(mob, player);
     }
 
     /**
