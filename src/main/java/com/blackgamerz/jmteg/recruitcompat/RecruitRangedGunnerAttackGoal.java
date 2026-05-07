@@ -157,6 +157,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private int aimTimer = 0;
     private int cooldownTimer = 0;
+    /** Absolute game tick when current reload is allowed to complete (-1 = not scheduled). */
+    private long reloadReadyAtTick = -1L;
 
     // Burst-fire state ─────────────────────────────────────────────────────────
     /** Shots still to be fired in the current burst cycle (0 = no burst active). */
@@ -199,6 +201,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
+        reloadReadyAtTick = -1L;
         remainingBurstsInCycle = 0;
         burstIntervalTick = 0;
         strafeTimer = currentProfile.strafeChangeTicks / 2;
@@ -216,6 +219,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         disableAdsOnHeldGun();
         mob.getNavigation().stop();
         this.state = State.IDLE;
+        reloadReadyAtTick = -1L;
         remainingBurstsInCycle = 0;
         burstIntervalTick = 0;
     }
@@ -249,6 +253,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
             state = State.IDLE;
+            reloadReadyAtTick = -1L;
             return;
         }
 
@@ -371,6 +376,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                             // Out of ammo mid-burst — abort burst and wait for reload.
                             remainingBurstsInCycle = 0;
                             state = State.RELOADING;
+                            reloadReadyAtTick = -1L;
                         }
                     }
                 }
@@ -385,16 +391,22 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                     } else {
                         // Ran out of ammo during cooldown — switch to reload wait.
                         state = State.RELOADING;
+                        reloadReadyAtTick = -1L;
                     }
                 }
             }
             case RELOADING -> {
                 // Stand still and wait until GunSyncGoal / RecruitAmmoResupplyGoal reloads the gun.
                 mob.getNavigation().stop();
-                if (isGunLoaded()) {
+                if (reloadReadyAtTick < 0L) {
+                    reloadReadyAtTick = mob.level().getGameTime() + computeReloadTicks();
+                }
+                boolean timerElapsed = mob.level().getGameTime() >= reloadReadyAtTick;
+                if (timerElapsed && isGunLoaded()) {
                     state = State.AIM;
                     aimTimer = computeAimTicks(dist);
                     enableAdsOnHeldGun();
+                    reloadReadyAtTick = -1L;
                 } else {
                     sendReloadBubble();
                 }
@@ -438,6 +450,20 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             return Math.max(1, JEGCompatManager.INSTANCE.getGunRate(gun));
         } catch (Throwable ignored) {
             return 1;
+        }
+    }
+
+    /**
+     * Resolve reload duration from the currently held weapon.
+     * Uses the JEG compat boundary and falls back to 20 ticks when unavailable.
+     */
+    private int computeReloadTicks() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return 20;
+            return Math.max(1, JEGCompatManager.INSTANCE.getReloadTicks(stack));
+        } catch (Throwable ignored) {
+            return 20;
         }
     }
 
