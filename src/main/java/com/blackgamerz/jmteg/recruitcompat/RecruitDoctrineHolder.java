@@ -88,16 +88,11 @@ public final class RecruitDoctrineHolder {
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Returns the active {@link RecruitDoctrine} for this recruit, checking (in
-     * priority order):
-     * <ol>
-     *   <li>Runtime cache (fast path, avoids repeated NBT reads)</li>
-     *   <li>The mob's own persistent-data NBT</li>
-     *   <li>The commander entity's persistent-data NBT (squad inheritance)</li>
-     * </ol>
-     * Returns {@code null} when no doctrine is set at any level.
+     * Returns the currently effective doctrine for this recruit.
+     * This is a compatibility alias for {@link #getEffectiveDoctrine(PathfinderMob)}.
      *
      * @param mob the recruit; {@code null} returns {@code null}
+     * @return the effective doctrine (personal override first, else commander), or {@code null}
      */
     public static RecruitDoctrine getDoctrine(PathfinderMob mob) {
         return getEffectiveDoctrine(mob);
@@ -106,6 +101,9 @@ public final class RecruitDoctrineHolder {
     /**
      * Returns only the recruit's own doctrine assignment from cache/NBT.
      * Commander inheritance is intentionally ignored.
+     *
+     * @param mob the recruit; {@code null} returns {@code null}
+     * @return the personal doctrine override stored on the recruit, or {@code null}
      */
     public static RecruitDoctrine getPersonalDoctrine(PathfinderMob mob) {
         if (mob == null) return null;
@@ -129,6 +127,9 @@ public final class RecruitDoctrineHolder {
     /**
      * Returns the doctrine that should actively affect the recruit:
      * personal override first, then commander inheritance.
+     *
+     * @param mob the recruit; {@code null} returns {@code null}
+     * @return the active doctrine after applying personal/commander precedence, or {@code null}
      */
     public static RecruitDoctrine getEffectiveDoctrine(PathfinderMob mob) {
         RecruitDoctrine personal = getPersonalDoctrine(mob);
@@ -140,6 +141,11 @@ public final class RecruitDoctrineHolder {
 
     /**
      * Returns the current effective doctrine source for UI/status display.
+     *
+     * @param mob the recruit; {@code null} resolves to {@link DoctrineSource#NONE}
+     * @return {@link DoctrineSource#PERSONAL} for per-recruit override,
+     *         {@link DoctrineSource#COMMANDER} for inherited squad doctrine,
+     *         or {@link DoctrineSource#NONE} when unset
      */
     public static DoctrineSource getDoctrineSource(PathfinderMob mob) {
         if (getPersonalDoctrine(mob) != null) {

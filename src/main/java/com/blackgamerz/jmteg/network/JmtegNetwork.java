@@ -53,7 +53,7 @@ public final class JmtegNetwork {
                 C2SRecruitDoctrineRequestPayload::handle,
                 Optional.of(NetworkDirection.PLAY_TO_SERVER));
 
-        CHANNEL.registerMessage(id,
+        CHANNEL.registerMessage(id++,
                 S2CRecruitDoctrineSyncPayload.class,
                 S2CRecruitDoctrineSyncPayload::encode,
                 S2CRecruitDoctrineSyncPayload::decode,

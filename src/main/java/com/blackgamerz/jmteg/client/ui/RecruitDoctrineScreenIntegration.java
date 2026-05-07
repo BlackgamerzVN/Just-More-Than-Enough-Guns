@@ -144,7 +144,7 @@ public final class RecruitDoctrineScreenIntegration {
 
         RecruitDoctrine shown = state.override
                 ? (state.selectedDoctrine != null ? state.selectedDoctrine : RecruitDoctrine.values()[0])
-                : state.personalDoctrine;
+                : state.effectiveDoctrine;
         String doctrineText = shown != null ? shown.displayName : "-";
         state.doctrineButton.setMessage(Component.literal("Doctrine: " + doctrineText));
         state.doctrineButton.active = state.override;
