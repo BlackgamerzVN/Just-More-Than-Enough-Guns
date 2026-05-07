@@ -1,25 +1,27 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
 
 /**
- * Movement/aim-only fallback for recruits holding JEG guns.
- * Shooting and reload are handled by the injected JEG GunAttackGoal (MobAiInjector).
+ * Movement/aim/fire/reload goal for recruits holding JEG guns.
+ * Shooting and reload are now self-contained: JEG's GunAttackGoal is NOT relied upon
+ * for these recruits (see MobAiInjectorReflection which skips injection for recruits).
  *
  * Enhancements included:
  * - Precise yaw/pitch application (instead of mob.lookAt)
@@ -42,6 +44,16 @@ import java.util.List;
  *   closes on the nearest threat, TACTICAL_RANGED hunts exposed / low-health targets, HEAVY
  *   walks into the largest enemy cluster, and UTILITY recruits prioritise enemies that are
  *   actively attacking nearby allies.
+ * - Self-contained firing: on AIM→COOLDOWN the goal calls JEGCompatManager.INSTANCE to spawn
+ *   projectiles, consume ammo, eject the casing, and play the fire sound.
+ * - Burst-fire support: when the aim timer expires the recruit fires a burst of up to
+ *   {@value #MAX_BURST_COUNT} shots, spacing them by the gun's own fire rate between each shot.
+ *   High-ammo-capacity guns are forced to use at least
+ *   {@value #MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN} shots per burst (never single-shot cycles).
+ *   Only after the full burst is exhausted does the goal enter COOLDOWN for the inter-burst pause.
+ * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
+ *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
+ *   bubble-ammo reload indicator particle in the meantime.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -50,7 +62,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private final PathfinderMob mob;
 
-    private enum State { IDLE, SEEK, AIM, COOLDOWN }
+    private enum State { IDLE, SEEK, AIM, COOLDOWN, RELOADING }
     private State state = State.IDLE;
 
     // ── Role-profile cache ────────────────────────────────────────────────────
@@ -84,16 +96,24 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private static final int MAX_COOLDOWN_TICKS = 40;
 
     // Reflection / physics fallbacks if JEG not available or we can't read values
-    private static final float DEFAULT_PROJECTILE_SPEED = 3.0f; // blocks per tick (fallback)
-    private static final float DEFAULT_PROJECTILE_GRAVITY = 0.04f; // positive magnitude (fallback)
+    // (ballistic defaults are now provided by ReflectiveJEGCompat / StubJEGCompat via JEGCompatManager)
 
     // Downward bias (degrees) to reduce overshooting; increase to aim lower
     private static final float AIM_DOWN_BIAS_DEGREES = 200.0f;
+    private static final float AIM_DOWN_BIAS_DEGREES_SQR = AIM_DOWN_BIAS_DEGREES * AIM_DOWN_BIAS_DEGREES;
 
     // ADS-like spread multiplier: while AIMing the gun's stored spread will be multiplied by this.
     // 1.0 = no change, 0.5 = half spread (more accurate). Tweak to your taste.
     // This is the best-case (weight=1.0) multiplier; inappropriate guns receive less benefit.
     private static final float ADS_SPREAD_MULTIPLIER = 0.025f;
+
+    // Burst-fire tuning ───────────────────────────────────────────────────────
+    /** Maximum shots that can be fired in one burst cycle (JEG uses 3 as its default). */
+    private static final int MAX_BURST_COUNT = 3;
+    /** Guns with max ammo >= this threshold are treated as high-capacity burst weapons (typical rifle mags are around 20-30). */
+    private static final int HIGH_CAPACITY_BURST_AMMO_THRESHOLD = 12;
+    /** Minimum burst size enforced for high-capacity guns so they never fire a single-shot cycle. */
+    private static final int MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN = 2;
 
     // Role-weight stat modifiers ──────────────────────────────────────────────
     // All four affect behaviour when the held gun is "inappropriate" for this recruit's tier
@@ -144,6 +164,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     private int aimTimer = 0;
     private int cooldownTimer = 0;
+    /** Absolute game tick when current reload is allowed to complete (-1 = not scheduled). */
+    private long reloadReadyAtTick = -1L;
+
+    // Burst-fire state ─────────────────────────────────────────────────────────
+    /** Shots still to be fired in the current burst cycle (0 = no burst active). */
+    private int remainingBurstsInCycle = 0;
+    /** Ticks to wait before firing the next shot within an active burst. */
+    private int burstIntervalTick = 0;
 
     // strafing state
     private int strafeTimer = 0;
@@ -180,6 +208,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         this.state = State.IDLE;
         aimTimer = 0;
         cooldownTimer = 0;
+        reloadReadyAtTick = -1L;
+        remainingBurstsInCycle = 0;
+        burstIntervalTick = 0;
         strafeTimer = currentProfile.strafeChangeTicks / 2;
         strafeDirection = mob.getRandom().nextBoolean() ? 1 : -1;
         // Force profile and doctrine re-detection on next tick so the goal starts with current info
@@ -195,6 +226,9 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         disableAdsOnHeldGun();
         mob.getNavigation().stop();
         this.state = State.IDLE;
+        reloadReadyAtTick = -1L;
+        remainingBurstsInCycle = 0;
+        burstIntervalTick = 0;
     }
 
     @Override
@@ -226,6 +260,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
             state = State.IDLE;
+            reloadReadyAtTick = -1L;
             return;
         }
 
@@ -314,28 +349,73 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
                 float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
 
-                // Extract projectile properties (try JEG via reflection with multiple fallbacks)
-                float projectileSpeed = getHeldProjectileSpeed(mob);
-                float projectileGravity = getHeldProjectileGravity(mob);
+                // Extract projectile properties through the established JEG compat boundary.
+                float projectileSpeed = JEGCompatManager.INSTANCE.getProjectileSpeed(mob.getMainHandItem());
+                float projectileGravity = JEGCompatManager.INSTANCE.getProjectileGravity(mob.getMainHandItem());
 
                 // Aim accounting for target motion and gravity
                 applyAdvancedAim(mob, target, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
 
                 aimTimer--;
                 if (aimTimer <= 0) {
-                    // Exiting AIM — restore spread before letting the GunAttackGoal run
-                    disableAdsOnHeldGun();
-                    // The injected JEG GunAttackGoal will perform the actual firing.
-                    cooldownTimer = computeCooldownTicks(dist);
-                    state = State.COOLDOWN;
+                    // Initialize burst cycle on first entry into the fire-ready phase.
+                    if (remainingBurstsInCycle <= 0) {
+                        remainingBurstsInCycle = computeBurstShotsForCurrentGun();
+                        burstIntervalTick = 0;    // fire first shot immediately
+                        disableAdsOnHeldGun();    // restore spread before firing
+                    }
+
+                    if (burstIntervalTick > 0) {
+                        burstIntervalTick--;
+                    } else {
+                        if (isGunLoaded()) {
+                            fireShot(target);
+                            remainingBurstsInCycle--;
+                            if (remainingBurstsInCycle <= 0) {
+                                // Burst complete — enter inter-burst cooldown.
+                                cooldownTimer = computeCooldownTicks(dist);
+                                state = State.COOLDOWN;
+                            } else {
+                                // More shots remain in this burst — wait inter-shot interval.
+                                burstIntervalTick = computeBurstIntervalTicks();
+                            }
+                        } else {
+                            // Out of ammo mid-burst — abort burst and wait for reload.
+                            remainingBurstsInCycle = 0;
+                            state = State.RELOADING;
+                            reloadReadyAtTick = -1L;
+                        }
+                    }
                 }
             }
             case COOLDOWN -> {
                 cooldownTimer--;
                 if (cooldownTimer <= 0) {
+                    if (isGunLoaded()) {
+                        state = State.AIM;
+                        aimTimer = computeAimTicks(dist);
+                        enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
+                    } else {
+                        // Ran out of ammo during cooldown — switch to reload wait.
+                        state = State.RELOADING;
+                        reloadReadyAtTick = -1L;
+                    }
+                }
+            }
+            case RELOADING -> {
+                // Stand still and wait until GunSyncGoal / RecruitAmmoResupplyGoal reloads the gun.
+                mob.getNavigation().stop();
+                if (reloadReadyAtTick < 0L) {
+                    reloadReadyAtTick = mob.level().getGameTime() + computeReloadTicks();
+                }
+                boolean timerElapsed = mob.level().getGameTime() >= reloadReadyAtTick;
+                if (timerElapsed && isGunLoaded()) {
                     state = State.AIM;
                     aimTimer = computeAimTicks(dist);
-                    enableAdsOnHeldGun(); // re-enable ADS-like spread reduction for the next aim cycle
+                    enableAdsOnHeldGun();
+                    reloadReadyAtTick = -1L;
+                } else {
+                    sendReloadBubble();
                 }
             }
         }
@@ -362,9 +442,150 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         return (int) Math.round(base * penalty * conserve);
     }
 
+    /**
+     * Returns the inter-shot delay (ticks) between shots within a burst cycle.
+     * Uses the held gun's fire rate ({@code Gun.General.getRate()}) as the interval so that
+     * burst cadence matches the gun's intended rate of fire, mirroring JEG's own behaviour
+     * where {@code attackTime} is reset to {@code getRate()} after each shot.
+     * Falls back to 1 tick on any error so the burst is never blocked.
+     */
+    private int computeBurstIntervalTicks() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack.isEmpty()) return 1;
+            Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+            return Math.max(1, JEGCompatManager.INSTANCE.getGunRate(gun));
+        } catch (Throwable ignored) {
+            return 1;
+        }
+    }
+
+    /**
+     * Computes how many shots to fire in the next burst cycle.
+     * High-capacity guns are forced to multi-shot bursts; all others keep the original
+     * random 1..MAX_BURST_COUNT behavior.
+     */
+    private int computeBurstShotsForCurrentGun() {
+        int minBurstShots = 1;
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (!stack.isEmpty()) {
+                Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+                int maxAmmo = JEGCompatManager.INSTANCE.getGunMaxAmmo(gun);
+                if (maxAmmo >= HIGH_CAPACITY_BURST_AMMO_THRESHOLD) {
+                    minBurstShots = MIN_BURST_SHOTS_FOR_HIGH_CAPACITY_GUN;
+                }
+            }
+        } catch (Throwable ignored) {
+            // keep default minimum burst size
+        }
+
+        int effectiveMinBurstShots = (int) clamp(minBurstShots, 1, MAX_BURST_COUNT);
+        if (effectiveMinBurstShots >= MAX_BURST_COUNT) {
+            return MAX_BURST_COUNT;
+        }
+        return effectiveMinBurstShots + mob.getRandom().nextInt(MAX_BURST_COUNT - effectiveMinBurstShots + 1);
+    }
+
+    /**
+     * Resolve reload duration from the currently held weapon.
+     * Uses the JEG compat boundary and falls back to 20 ticks when unavailable.
+     */
+    private int computeReloadTicks() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return 20;
+            return Math.max(1, JEGCompatManager.INSTANCE.getReloadTicks(stack));
+        } catch (Throwable ignored) {
+            return 20;
+        }
+    }
+
     private static double clamp(double v, double a, double b) {
         return v < a ? a : (v > b ? b : v);
     }
+
+    // ── Firing ────────────────────────────────────────────────────────────────
+
+    /**
+     * Fires one shot at {@code target} using the held JEG gun:
+     * <ol>
+     *   <li>Resolves the {@code Gun} object via {@link JEGCompatManager#INSTANCE}.</li>
+     *   <li>Delegates projectile spawning to {@code AIGunEvent.performGunAttack}.</li>
+     *   <li>Decrements {@code AmmoCount} in the stack NBT.</li>
+     *   <li>Ejects a casing via {@code GunEventBus.ejectCasing}.</li>
+     *   <li>Plays the gun's fire sound, if set.</li>
+     * </ol>
+     * All steps are individually guarded; a failure in one does not prevent the others.
+     */
+    private void fireShot(LivingEntity target) {
+        ItemStack stack = mob.getMainHandItem();
+        if (stack == null || stack.isEmpty()) return;
+
+        Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
+        if (gun == null) return;
+
+        // Spawn projectile(s). Use a minimal spread so the ADS reduction is already in NBT;
+        // passing 1.0f lets JEG's own difficulty/spread multipliers handle any remaining bloom.
+        float spread = computeAdsSpreadMultiplier();
+        JEGCompatManager.INSTANCE.performGunAttack(mob, target, stack, gun, spread, false);
+
+        // Consume one ammo unit from the stack.
+        JustEnoughGunsCompat.consumeAmmoOnGun(stack);
+
+        // Eject brass / shell.
+        JEGCompatManager.INSTANCE.ejectCasing(mob.level(), mob);
+
+        // Play the configured fire sound, if any.
+        ResourceLocation fireSound = JEGCompatManager.INSTANCE.getFireSound(gun);
+        if (fireSound != null) {
+            mob.level().playSound(null, mob.getX(), mob.getY(), mob.getZ(),
+                    SoundEvent.createVariableRangeEvent(fireSound),
+                    SoundSource.HOSTILE, 0.5f, 0.9f + mob.getRandom().nextFloat() * 0.2f);
+        }
+    }
+
+    /**
+     * Returns {@code true} when the held gun has at least one ammo unit remaining.
+     * Reads {@code AmmoCount} from the stack's NBT; returns {@code false} on any error
+     * so the recruit enters the RELOADING state rather than firing with an empty gun.
+     */
+    private boolean isGunLoaded() {
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return false;
+            CompoundTag tag = stack.getTag();
+            return tag != null && tag.contains("AmmoCount") && tag.getInt("AmmoCount") > 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Emits the JEG reload-indicator particle ({@code jeg:bubble_ammo}) above the mob's
+     * head, mirroring the visual feedback JEG's own {@code GunAttackGoal} produces while
+     * reloading.  Guarded by a registry-key check so it silently no-ops when JEG is absent.
+     */
+    private void sendReloadBubble() {
+        try {
+            if (mob.level().isClientSide()) return;
+            ResourceLocation bubbleKey = ResourceLocation.fromNamespaceAndPath("jeg", "bubble_ammo");
+
+            var particleType = BuiltInRegistries.PARTICLE_TYPE.get(bubbleKey);
+            if (!(particleType instanceof net.minecraft.core.particles.SimpleParticleType simple)) return;
+
+            net.minecraft.server.level.ServerLevel serverLevel =
+                    (net.minecraft.server.level.ServerLevel) mob.level();
+
+            serverLevel.sendParticles(simple,
+                    mob.getX(), mob.getY() + mob.getEyeHeight() + 0.9, mob.getZ(),
+                    1, 0.0, 0.0, 0.0, 0.0);
+        } catch (Throwable ignored) {
+            // cosmetic only
+        }
+    }
+
+    // ── ADS (Aim-Down-Sights) spread helpers ──────────────────────────────────
 
     /**
      * Temporarily reduce the held gun's stored spread in NBT so JEG will treat it as "aiming".
@@ -505,7 +726,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
 
         // Apply a small downward bias to counter systematic overshoot and clamp
-        pitchDeg += AIM_DOWN_BIAS_DEGREES;
+        pitchDeg += AIM_DOWN_BIAS_DEGREES_SQR;
         if (pitchDeg > 90.0) pitchDeg = 90.0;
         if (pitchDeg < -90.0) pitchDeg = -90.0;
 
@@ -637,104 +858,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private float computeAdsSpreadMultiplier() {
         double weight = getHeldGunWeight();
         return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - weight));
-    }
-
-    /**
-     * Robust extraction of projectile base speed from held JEG gun using reflection.
-     * Returns DEFAULT_PROJECTILE_SPEED on any failure.
-     */
-    private static float getHeldProjectileSpeed(PathfinderMob mob) {
-        try {
-            ItemStack main = mob.getMainHandItem();
-            if (main == null || main.isEmpty()) return DEFAULT_PROJECTILE_SPEED;
-            Item item = main.getItem();
-
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            if (!jegGunItemClass.isInstance(item)) return DEFAULT_PROJECTILE_SPEED;
-
-            Method getModifiedGun = jegGunItemClass.getMethod("getModifiedGun", ItemStack.class);
-            Object gunObj = getModifiedGun.invoke(item, main);
-            if (gunObj == null) return DEFAULT_PROJECTILE_SPEED;
-
-            // Try gun.getProjectile().getSpeed()
-            try {
-                Method getProjectile = gunObj.getClass().getMethod("getProjectile");
-                Object projObj = getProjectile.invoke(gunObj);
-                if (projObj != null) {
-                    try {
-                        Method getSpeed = projObj.getClass().getMethod("getSpeed");
-                        Object val = getSpeed.invoke(projObj);
-                        if (val instanceof Number) return ((Number) val).floatValue();
-                    } catch (NoSuchMethodException ignored) {
-                    }
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-
-            // Fallback: gun.getProjectileSpeed()
-            try {
-                Method mg = gunObj.getClass().getMethod("getProjectileSpeed");
-                Object val = mg.invoke(gunObj);
-                if (val instanceof Number) return ((Number) val).floatValue();
-            } catch (Throwable ignored) {
-            }
-
-        } catch (Throwable ignored) {
-        }
-        return DEFAULT_PROJECTILE_SPEED;
-    }
-
-    /**
-     * Robust extraction of projectile gravity from held JEG gun using reflection.
-     * Returns a positive gravity magnitude appropriate for use in projectile formulas.
-     * If projectile has gravity disabled returns 0.0f.
-     * On failures returns DEFAULT_PROJECTILE_GRAVITY.
-     */
-    private static float getHeldProjectileGravity(PathfinderMob mob) {
-        try {
-            ItemStack main = mob.getMainHandItem();
-            if (main == null || main.isEmpty()) return DEFAULT_PROJECTILE_GRAVITY;
-            Item item = main.getItem();
-
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            if (!jegGunItemClass.isInstance(item)) return DEFAULT_PROJECTILE_GRAVITY;
-
-            Method getModifiedGun = jegGunItemClass.getMethod("getModifiedGun", ItemStack.class);
-            Object gunObj = getModifiedGun.invoke(item, main);
-            if (gunObj == null) return DEFAULT_PROJECTILE_GRAVITY;
-
-            // Try projectile.getGravity()
-            try {
-                Method getProjectile = gunObj.getClass().getMethod("getProjectile");
-                Object projObj = getProjectile.invoke(gunObj);
-                if (projObj != null) {
-                    try {
-                        Method mg = projObj.getClass().getMethod("getGravity");
-                        Object val = mg.invoke(projObj);
-                        if (val instanceof Number) {
-                            double g = ((Number) val).doubleValue();
-                            return (float) Math.abs(g);
-                        }
-                    } catch (NoSuchMethodException ignored) {
-                    }
-                }
-            } catch (NoSuchMethodException ignored) {
-            }
-
-            // Fallback: gunObj.getProjectileGravity() or similar method/field
-            try {
-                Method mg = gunObj.getClass().getMethod("getProjectileGravity");
-                Object val = mg.invoke(gunObj);
-                if (val instanceof Number) {
-                    double g = ((Number) val).doubleValue();
-                    return (float) Math.abs(g);
-                }
-            } catch (Throwable ignored) {
-            }
-
-        } catch (Throwable ignored) {
-        }
-        return DEFAULT_PROJECTILE_GRAVITY;
     }
 
     // ── Role-aware target selection ───────────────────────────────────────────
