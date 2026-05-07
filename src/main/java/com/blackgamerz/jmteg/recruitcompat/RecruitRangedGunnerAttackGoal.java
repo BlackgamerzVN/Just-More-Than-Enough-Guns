@@ -468,7 +468,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         int minBurstShots = 1;
         try {
             ItemStack stack = mob.getMainHandItem();
-            if (stack != null && !stack.isEmpty()) {
+            if (!stack.isEmpty()) {
                 Object gun = JEGCompatManager.INSTANCE.getModifiedGun(stack);
                 int maxAmmo = JEGCompatManager.INSTANCE.getGunMaxAmmo(gun);
                 if (maxAmmo >= HIGH_CAPACITY_BURST_AMMO_THRESHOLD) {
