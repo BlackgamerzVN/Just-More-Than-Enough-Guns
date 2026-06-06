@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.Main;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -201,7 +202,7 @@ public final class RecruitMovementDoctrineIntegrator {
             case 0: // wander
                 return null;
             case 1: // follow
-                return RecruitDoctrine.MOBILE; // MOBILE must exist — if not, defaults handled by enum
+                return RecruitDoctrine.SKIRMISHER;
             case 2: // hold your position
             case 4: // hold my position
                 return RecruitDoctrine.DEFENSIVE;

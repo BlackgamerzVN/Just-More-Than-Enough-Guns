@@ -113,36 +113,24 @@ minecraft {
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
-    // Modrinth/CurseMaven/Jitpack/etc., as appropriate for JEG
     maven { url = "https://www.cursemaven.com" }
-    // Or JEG’s specific Maven (ask JEG’s author or see their docs)
+    maven {
+        name = 'GeckoLib'
+        url 'https://dl.cloudsmith.io/public/geckolib3/geckolib/maven/'
+        content {
+            includeGroupByRegex("software\\.bernie.*")
+            includeGroup("com.eliotlash.mclib")
+        }
+    }
 }
 
 dependencies {
-    // Specify the version of Minecraft to use.
-    // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
-    // The "userdev" classifier will be requested and setup by ForgeGradle.
-    // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
-    // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:1.20.1-${forge_version}"
-// --- put these inside dependencies { ... } ---
-    compileOnly files('libs/jeg.jar')
-    compileOnly files('libs/recruits.jar')
-    // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
-    // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
-    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-common-api:${jei_version}")
-    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-forge-api:${jei_version}")
-    // runtimeOnly fg.deobf("mezz.jei:jei-${mc_version}-forge:${jei_version}")
 
-    // Example mod dependency using a mod jar from ./libs with a flat dir repository
-    // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
-    // The group id is ignored when searching -- in this case, it is "blank"
-    // implementation fg.deobf("blank:coolmod-${mc_version}:${coolmod_version}")
-    implementation 'org.spongepowered:mixin:0.8.5' // Or later
-
-    // For more info:
-    // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
-    // http://www.gradle.org/docs/current/userguide/dependency_management.html
+    runtimeOnly fg.deobf('curse.maven:just-enough-guns-820727:6808139')
+    runtimeOnly fg.deobf('curse.maven:recruits-523860:7906232')
+    runtimeOnly fg.deobf('curse.maven:framework-549225:5692398')
+    runtimeOnly fg.deobf('software.bernie.geckolib:geckolib-forge-1.20.1:4.4.4')
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
