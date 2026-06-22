@@ -30,6 +30,7 @@ import org.slf4j.Logger;
 
 import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
 import com.blackgamerz.jmteg.jegcompat.StubJEGCompat;
+import com.blackgamerz.jmteg.network.JmtegNetwork;
 
 // The value here should match an entry in the META-INF/mods.toml file
 @Mod(Main.MOD_ID)
@@ -56,6 +57,7 @@ public class Main {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
+        event.enqueueWork(JmtegNetwork::register);
         if (JEGCompatManager.INSTANCE instanceof StubJEGCompat) {
             LOGGER.info("JEG Compat: running WITHOUT real JEG integration (StubJEGCompat).");
         } else {

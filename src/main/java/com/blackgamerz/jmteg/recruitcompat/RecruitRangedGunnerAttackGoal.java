@@ -84,7 +84,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /**
      * Active doctrine for this recruit, or {@code null} if none is set.
-     * Refreshed via {@link RecruitDoctrineHolder#getDoctrine(PathfinderMob)} every
+     * Refreshed via {@link RecruitDoctrineHolder#getEffectiveDoctrine(PathfinderMob)} every
      * {@link #ROLE_CACHE_INTERVAL} ticks.
      */
     private RecruitDoctrine currentDoctrine = null;
@@ -241,7 +241,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         if (roleCacheTick <= 0) {
             roleCacheTick = ROLE_CACHE_INTERVAL;
             RecruitGunRole detectedRole = detectHeldGunRole();
-            RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getDoctrine(mob);
+            RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getEffectiveDoctrine(mob);
             if (detectedRole != cachedRole || detectedDoctrine != currentDoctrine) {
                 cachedRole      = detectedRole;
                 currentDoctrine = detectedDoctrine;
