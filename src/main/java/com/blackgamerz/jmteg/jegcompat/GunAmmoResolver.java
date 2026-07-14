@@ -52,10 +52,12 @@ public class GunAmmoResolver {
      * Matches if the given ItemStack is the correct ammo for the provided gun.
      */
     public static boolean isAmmoForGun(ItemStack ammoCandidate, Gun gun) {
+        if (gun == null || ammoCandidate == null || ammoCandidate.isEmpty()) return false;
         ResourceLocation required = resolveRequiredAmmoId(gun.stack);
-        if (required == null || ammoCandidate == null) return false;
+        if (required == null) return false;
         ResourceLocation actualAmmoId =
                 ForgeRegistries.ITEMS.getKey(ammoCandidate.getItem());
+        if (actualAmmoId == null) return false;
         return required.equals(actualAmmoId);
     }
 

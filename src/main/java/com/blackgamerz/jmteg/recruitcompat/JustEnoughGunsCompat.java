@@ -148,8 +148,12 @@ public final class JustEnoughGunsCompat {
             if (gun != null) {
                 // Get projectile
                 Object projectile = gun.getClass().getMethod("getProjectile").invoke(gun);
-                // Get ammo item
+                // Get ammo item — depending on JEG version this may be an Item, a
+                // ResourceLocation, or a String, so resolve it to a registry key up front
+                // rather than relying on reference equality against the raw reflected object.
                 Object ammoItem = projectile.getClass().getMethod("getItem").invoke(projectile);
+                ResourceLocation requiredAmmoId = resolveAmmoItemId(ammoItem);
+                if (requiredAmmoId == null) return false;
 
                 // Try Recruit inventory (reflection for cross-mod support)
                 try {
@@ -160,7 +164,7 @@ public final class JustEnoughGunsCompat {
                         for (int i = 0; i < size; i++) {
                             ItemStack stack = (ItemStack) inventory.getClass()
                                     .getMethod("getItem", int.class).invoke(inventory, i);
-                            if (!stack.isEmpty() && stack.getItem() == ammoItem) {
+                            if (!stack.isEmpty() && requiredAmmoId.equals(itemIdOf(stack))) {
                                 return true;
                             }
                         }
@@ -170,12 +174,28 @@ public final class JustEnoughGunsCompat {
                 }
                 // Fallback to hands
                 ItemStack mainhand = entity.getMainHandItem();
-                if (!mainhand.isEmpty() && mainhand.getItem() == ammoItem) return true;
+                if (!mainhand.isEmpty() && requiredAmmoId.equals(itemIdOf(mainhand))) return true;
                 ItemStack offhand = entity.getOffhandItem();
-                if (!offhand.isEmpty() && offhand.getItem() == ammoItem) return true;
+                if (!offhand.isEmpty() && requiredAmmoId.equals(itemIdOf(offhand))) return true;
             }
         } catch (Exception ignored) {}
         return false;
+    }
+
+    /**
+     * Resolves a reflectively-obtained ammo descriptor (Item, ResourceLocation, or String)
+     * to its registry {@link ResourceLocation}, so ammo matching is done by identity rather
+     * than a potentially type-mismatched {@code ==} comparison.
+     */
+    private static ResourceLocation resolveAmmoItemId(Object ammoItem) {
+        if (ammoItem == null) return null;
+        if (ammoItem instanceof ResourceLocation rl) return rl;
+        if (ammoItem instanceof Item i) return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(i);
+        return ResourceLocation.tryParse(ammoItem.toString());
+    }
+
+    private static ResourceLocation itemIdOf(ItemStack stack) {
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
     }
 
 }

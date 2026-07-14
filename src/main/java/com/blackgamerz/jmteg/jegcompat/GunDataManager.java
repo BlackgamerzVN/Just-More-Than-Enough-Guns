@@ -5,6 +5,8 @@ import com.google.gson.JsonParser;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistries;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -14,6 +16,7 @@ import java.util.Map;
 
 public class GunDataManager {
 
+    private static final Logger LOGGER = LogManager.getLogger("JMT-GunDataManager");
     private static final Map<ResourceLocation, JsonObject> gunConfigCache = new HashMap<>();
 
     /**
@@ -21,6 +24,7 @@ public class GunDataManager {
      * Adjust the resource path for your file locations!
      */
     public static JsonObject getConfig(ResourceLocation itemId) {
+        if (itemId == null) return null;
         if (gunConfigCache.containsKey(itemId)) return gunConfigCache.get(itemId);
 
         // Example: "/assets/jeg/guns/assault_rifle.json" for jeg:assault_rifle
@@ -31,13 +35,15 @@ public class GunDataManager {
             gunConfigCache.put(itemId, obj);
             return obj;
         } catch (Exception e) {
-            e.printStackTrace();
+            LOGGER.debug("Failed to load/parse gun config for {}: {}", itemId, e.toString());
             return null;
         }
     }
 
     public static String getAmmoTypeFromJson(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return null;
         ResourceLocation itemId = ForgeRegistries.ITEMS.getKey(stack.getItem());
+        if (itemId == null) return null;
         // Load JSON config for itemId (e.g. jeg:assault_rifle loads "assault_rifle.json")
         JsonObject gunConfig = GunDataManager.getConfig(itemId);
         if (gunConfig == null) return null;

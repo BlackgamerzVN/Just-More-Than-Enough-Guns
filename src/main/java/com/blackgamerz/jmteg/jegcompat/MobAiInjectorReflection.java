@@ -12,10 +12,15 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
 import net.minecraft.resources.ResourceLocation;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.lang.reflect.*;
 
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE, modid = Main.MOD_ID)
 public final class MobAiInjectorReflection {
+
+    private static final Logger LOGGER = LogManager.getLogger("JMT-MobAiInjector");
 
     private static ResourceLocation rl(String ns, String path) {
         ResourceLocation parsed = ResourceLocation.tryParse(ns + ":" + path);
@@ -35,15 +40,25 @@ public final class MobAiInjectorReflection {
         String fqcn = mob.getClass().getName();
         if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
 
+        Class<?> jegGunItemClass;
+        Class<?> jegGunClass;
+        Class<?> jegMobAmmoHelperClass;
+        Class<?> jegGunAttackGoalClass;
+        Class<?> jegAITypeClass;
         try {
             // Try to load JEG classes. If any are missing, Class.forName will throw and we abort.
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            Class<?> jegGunClass = Class.forName("ttv.migami.jeg.common.Gun");
-            Class<?> jegReloadsClass = Class.forName("ttv.migami.jeg.common.Reloads"); // adjust name if different; or get via method return
-            Class<?> jegReloadTypeClass = Class.forName("ttv.migami.jeg.common.ReloadType");
-            Class<?> jegMobAmmoHelperClass = Class.forName("ttv.migami.jeg.common.MobAmmoHelper");
-            Class<?> jegGunAttackGoalClass = Class.forName("ttv.migami.jeg.entity.ai.GunAttackGoal");
-            Class<?> jegAITypeClass = Class.forName("ttv.migami.jeg.entity.ai.AIType");
+            jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
+            jegGunClass = Class.forName("ttv.migami.jeg.common.Gun");
+            jegMobAmmoHelperClass = Class.forName("ttv.migami.jeg.common.MobAmmoHelper");
+            jegGunAttackGoalClass = Class.forName("ttv.migami.jeg.entity.ai.GunAttackGoal");
+            jegAITypeClass = Class.forName("ttv.migami.jeg.entity.ai.AIType");
+        } catch (ClassNotFoundException e) {
+            // JEG not present, or its classes moved/renamed in a version JMTEG doesn't know about.
+            LOGGER.debug("JEG class not found (JEG absent or version mismatch): {}", e.getMessage());
+            return;
+        }
+
+        try {
 
             // Check main hand item is instance of JEG's GunItem
             ItemStack main = mob.getMainHandItem();
@@ -76,31 +91,27 @@ public final class MobAiInjectorReflection {
                 // try alternative method name if needed or bail
             }
 
-            // Determine poolId ResourceLocation:
-            // reloadsObj may be a ResourceLocation, an Item, or a String — handle each case safely
+            // Determine poolId ResourceLocation from reloadType (the actual pool identifier
+            // returned by Reloads.getReloadType()) — NOT reloadsObj, which is just the Reloads
+            // wrapper object itself and will never match ResourceLocation/String/Item.
+            // reloadType may be a ResourceLocation, an Item, or a String — handle each case safely.
             ResourceLocation poolId = null;
-            if (reloadsObj instanceof ResourceLocation rl) {
+            if (reloadType instanceof ResourceLocation rl) {
                 poolId = rl;
-            } else if (reloadsObj instanceof String s) {
+            } else if (reloadType instanceof String s) {
                 poolId = ResourceLocation.tryParse(s);
-            } else {
+            } else if (reloadType instanceof net.minecraft.world.item.Item itemObj) {
+                poolId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(itemObj);
+            } else if (reloadType != null) {
                 // Last-resort: call toString() then tryParse
-                String txt = reloadsObj != null ? reloadsObj.toString() : null;
-                poolId = txt != null ? ResourceLocation.tryParse(txt) : null;
-            }
-
-// Fallback: if reloadItemObj was an Item instance, try to get its registry key
-            if (poolId == null && reloadsObj != null) {
-                try {
-                    if (reloadsObj instanceof net.minecraft.world.item.Item itemObj) {
-                        poolId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(itemObj);
-                    }
-                } catch (Throwable ignored) {}
+                String txt = reloadType.toString();
+                poolId = ResourceLocation.tryParse(txt);
             }
 
             if (poolId == null) {
-                // couldn't determine pool id — choose a sensible fallback or skip seeding
-                // e.g., log and continue
+                // Couldn't determine pool id — skip seeding for this gun rather than guessing.
+                LOGGER.debug("Could not resolve ammo pool id from reloadType={} for gun on {}",
+                        reloadType, mob.getClass().getName());
             }
 
             // Seed mob pool if empty
@@ -140,11 +151,9 @@ public final class MobAiInjectorReflection {
                 Method addGoalMethod = mob.goalSelector.getClass().getMethod("addGoal", int.class, Goal.class);
                 addGoalMethod.invoke(mob.goalSelector, 0, goalInstance);
             }
-        } catch (ClassNotFoundException e) {
-            // JEG not present -> nothing to do
         } catch (InvocationTargetException | NoSuchMethodException | InstantiationException | IllegalAccessException | LinkageError e) {
-            // Reflection failed; log for debugging
-            e.printStackTrace();
+            // Reflection failed — likely a JEG version mismatch on a method/constructor signature.
+            LOGGER.debug("Failed to inject GunAttackGoal for {} via reflection", mob.getClass().getName(), e);
         }
     }
 }

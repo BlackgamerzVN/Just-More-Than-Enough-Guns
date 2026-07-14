@@ -6,6 +6,8 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 
@@ -23,6 +25,8 @@ import java.lang.reflect.Method;
  * its safe default — it does <em>not</em> throw.</p>
  */
 public class ReflectiveJEGCompat implements IJEGCompat {
+
+    private static final Logger LOGGER = LogManager.getLogger("JMT-ReflectiveJEGCompat");
 
     // ── Cached method handles resolved once at construction ───────────────────
     private final Method performGunAttackMethod;   // AIGunEvent.performGunAttack(…)
@@ -85,7 +89,9 @@ public class ReflectiveJEGCompat implements IJEGCompat {
         if (performGunAttackMethod == null) return;
         try {
             performGunAttackMethod.invoke(null, shooter, target, itemStack, gun, spreadModifier, slowShot);
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("performGunAttack invocation failed for {} (JEG version mismatch?)", shooter, t);
+        }
     }
 
     @Override
