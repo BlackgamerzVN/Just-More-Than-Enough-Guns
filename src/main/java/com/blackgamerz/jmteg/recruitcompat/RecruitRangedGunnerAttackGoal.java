@@ -11,6 +11,7 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
@@ -188,11 +189,20 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
     private static final String JMTEG_ORIG_SPREAD = "jmteg_original_spread";
+    /**
+     * Best-effort, client-visible cue written to the held stack's NBT whenever {@link #state}
+     * transitions into or out of {@link State#RELOADING}. Purely cosmetic - read client-side by
+     * {@code RecruitArmPoseHandler} to show a distinct reload pose. Not required for gameplay
+     * correctness, so failures to write/sync it are silently ignored.
+     */
+    private static final String JMTEG_RELOADING_FLAG = "jmteg_reloading";
 
     private int aimTimer = 0;
     private int cooldownTimer = 0;
     /** Absolute game tick when current reload is allowed to complete (-1 = not scheduled). */
     private long reloadReadyAtTick = -1L;
+    /** Last {@link #state} value for which {@link #syncReloadingVisualFlag()} wrote NBT; avoids per-tick churn. */
+    private State lastSyncedReloadState = null;
 
     // Burst-fire state ─────────────────────────────────────────────────────────
     /** Shots still to be fired in the current burst cycle (0 = no burst active). */
@@ -249,6 +259,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         currentDoctrine = null;
         holdPosition = false;
         currentProfile = RecruitRoleProfile.forRole(null);
+        // Force the reload-visual flag to resync from scratch (goal may have just re-started).
+        lastSyncedReloadState = null;
     }
 
     @Override
@@ -260,6 +272,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         reloadReadyAtTick = -1L;
         remainingBurstsInCycle = 0;
         burstIntervalTick = 0;
+        clearReloadingVisualFlag();
     }
 
     @Override
@@ -292,12 +305,16 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // No live target - try Strategic Fire (area-denial order at a fixed BlockPos)
             // before giving up. This is what keeps the command from being a silent
             // no-op for recruits wielding JEG guns.
-            if (tickStrategicFire()) return;
+            if (tickStrategicFire()) {
+                syncReloadingVisualFlag();
+                return;
+            }
 
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
             state = State.IDLE;
             reloadReadyAtTick = -1L;
+            syncReloadingVisualFlag();
             return;
         }
 
@@ -463,6 +480,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
             }
         }
+        syncReloadingVisualFlag();
     }
 
     // Compute aim ticks: closer => fewer ticks (faster firing), far => longer aim for accuracy.
@@ -557,6 +575,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      *   <li>Decrements {@code AmmoCount} in the stack NBT.</li>
      *   <li>Ejects a casing via {@code GunEventBus.ejectCasing}.</li>
      *   <li>Plays the gun's fire sound, if set.</li>
+     *   <li>Triggers a vanilla hand-swing, giving observers a networked, client-visible
+     *       recoil cue (see {@code RecruitArmPoseHandler}'s pose-stack kick effect).</li>
      * </ol>
      * All steps are individually guarded; a failure in one does not prevent the others.
      */
@@ -584,6 +604,52 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             mob.level().playSound(null, mob.getX(), mob.getY(), mob.getZ(),
                     SoundEvent.createVariableRangeEvent(fireSound),
                     SoundSource.HOSTILE, 0.5f, 0.9f + mob.getRandom().nextFloat() * 0.2f);
+        }
+
+        // Vanilla hand-swing: purely a visual recoil cue. This is standard engine-networked
+        // state (LivingEntity#swing broadcasts to nearby clients and drives getAttackAnim()),
+        // so it works out of the box with zero reflection and zero custom sync code.
+        mob.swing(InteractionHand.MAIN_HAND);
+    }
+
+    /**
+     * Writes {@link #JMTEG_RELOADING_FLAG} onto the held stack's NBT when {@link #state}
+     * transitions into or out of {@link State#RELOADING}, and no-ops otherwise (so it's cheap
+     * to call unconditionally at every {@code tick()} exit point). Purely a client-visible
+     * cosmetic cue for {@code RecruitArmPoseHandler}; failures are silently ignored since
+     * nothing gameplay-relevant depends on it.
+     */
+    private void syncReloadingVisualFlag() {
+        if (state == lastSyncedReloadState) return;
+        lastSyncedReloadState = state;
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return;
+            CompoundTag tag = stack.getOrCreateTag();
+            if (state == State.RELOADING) {
+                tag.putBoolean(JMTEG_RELOADING_FLAG, true);
+            } else {
+                tag.remove(JMTEG_RELOADING_FLAG);
+            }
+            stack.setTag(tag);
+        } catch (Throwable ignored) {
+            // best-effort cosmetic sync only
+        }
+    }
+
+    /** Forces {@link #JMTEG_RELOADING_FLAG} off, used when the goal stops entirely. */
+    private void clearReloadingVisualFlag() {
+        lastSyncedReloadState = null;
+        try {
+            ItemStack stack = mob.getMainHandItem();
+            if (stack == null || stack.isEmpty()) return;
+            CompoundTag tag = stack.getTag();
+            if (tag != null && tag.contains(JMTEG_RELOADING_FLAG)) {
+                tag.remove(JMTEG_RELOADING_FLAG);
+                stack.setTag(tag);
+            }
+        } catch (Throwable ignored) {
+            // best-effort cosmetic sync only
         }
     }
 

@@ -6,6 +6,8 @@ import com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat;
 import com.blackgamerz.jmteg.jegcompat.GunDataManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.HumanoidModel;
+import net.minecraft.util.Mth;
+import com.mojang.math.Axis;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -62,6 +64,16 @@ public final class RecruitArmPoseHandler {
     private static final int CLEAR_RETRY_TICKS = 8; // retry for 8 client ticks ~ 0.4s
     private static final Map<LivingEntity, Integer> pendingClears = Collections.synchronizedMap(new WeakHashMap<>());
 
+    // --- Recoil-kick visual state (fire cue) ---
+    // Max whole-body pitch-back rotation applied at the peak of the vanilla attack-swing curve.
+    private static final float RECOIL_MAX_KICK_DEGREES = 12.0f;
+    // Tracks which entities we actually pushed a pose-stack transform for this frame, so Post
+    // pops exactly the entities Pre pushed for (and nothing else).
+    private static final Set<LivingEntity> recoilPushedEntities = Collections.newSetFromMap(new WeakHashMap<>());
+
+    // NBT key written by RecruitRangedGunnerAttackGoal while the recruit is reloading its JEG gun.
+    private static final String JMTEG_RELOADING_FLAG = "jmteg_reloading";
+
     private RecruitArmPoseHandler() {}
 
     private static final class ArmPosePair {
@@ -91,6 +103,23 @@ public final class RecruitArmPoseHandler {
                 originalPoses.put(humanoidModel,
                         new ArmPosePair(humanoidModel.rightArmPose, humanoidModel.leftArmPose));
             }
+        }
+
+        // Recoil kick: fires regardless of which pose branch below is chosen, since it reads a
+        // purely-vanilla, already-networked swing progress value independent of gun type.
+        applyRecoilKick(event, ent);
+
+        // Reload cue: while RecruitRangedGunnerAttackGoal has marked this stack as reloading,
+        // show a lowered/cradled hold instead of whatever aim-specific pose the gun would
+        // otherwise get, so reload is visually distinguishable from actively aiming/firing.
+        if (main.getTag() != null && main.getTag().getBoolean(JMTEG_RELOADING_FLAG)) {
+            try {
+                humanoidModel.rightArmPose = HumanoidModel.ArmPose.CROSSBOW_HOLD;
+                humanoidModel.leftArmPose = HumanoidModel.ArmPose.CROSSBOW_HOLD;
+            } catch (Throwable t) {
+                LOGGER.debug("Failed to apply recruit reload pose", t);
+            }
+            return;
         }
 
         // --- Determine gun characteristics (same heuristics as before) ---
@@ -161,12 +190,55 @@ public final class RecruitArmPoseHandler {
     }
 
     /**
+     * Applies a whole-body "kick-back" rotation while the entity's vanilla attack-swing animation
+     * is in progress, giving a cheap-but-effective recoil cue. Driven by {@code fireShot()} calling
+     * {@code mob.swing(InteractionHand.MAIN_HAND)}, which is a standard vanilla/Forge mechanism
+     * already networked to nearby clients (no custom sync code needed here).
+     *
+     * Always pairs a successful {@code pushPose()} with either a tracked pop (in
+     * {@link #onRenderLivingPost}) or an immediate pop on failure, so the pose stack can never end
+     * up unbalanced for the rest of the frame's rendering.
+     */
+    private static void applyRecoilKick(RenderLivingEvent.Pre<LivingEntity, ?> event, LivingEntity ent) {
+        try {
+            float swing = ent.getAttackAnim(event.getPartialTick());
+            if (swing <= 0f) return;
+
+            // Sine-shaped curve: eases in, peaks mid-swing, eases back out - mirrors the feel of
+            // vanilla's own attack-anim curve rather than a linear snap.
+            float curve = Mth.sin(swing * (float) Math.PI);
+            float kickDegrees = RECOIL_MAX_KICK_DEGREES * curve;
+
+            event.getPoseStack().pushPose();
+            try {
+                event.getPoseStack().mulPose(Axis.XP.rotationDegrees(-kickDegrees));
+                recoilPushedEntities.add(ent);
+            } catch (Throwable inner) {
+                // Keep the stack balanced even if the rotation call itself somehow fails.
+                event.getPoseStack().popPose();
+                LOGGER.debug("Recoil kick rotation failed; popped immediately", inner);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("Failed to apply recruit recoil kick", t);
+        }
+    }
+
+    /**
      * Restore original arm poses after render so other renders / frames are not impacted.
      */
     @SubscribeEvent
     public static void onRenderLivingPost(RenderLivingEvent.Post<LivingEntity, ?> event) {
         if (!(event.getRenderer() instanceof MobRenderer<?, ?> mobRenderer)) return;
         if (!(mobRenderer.getModel() instanceof HumanoidModel<?> humanoidModel)) return;
+
+        LivingEntity ent = event.getEntity();
+        if (recoilPushedEntities.remove(ent)) {
+            try {
+                event.getPoseStack().popPose();
+            } catch (Throwable t) {
+                LOGGER.debug("Failed to pop recruit recoil kick pose", t);
+            }
+        }
 
         ArmPosePair orig;
         synchronized (originalPoses) {
