@@ -1,6 +1,7 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.jegcompat.JEGCompatManager;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
@@ -15,8 +16,12 @@ import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Movement/aim/fire/reload goal for recruits holding JEG guns.
@@ -57,6 +62,11 @@ import java.util.List;
  * - Hold-position awareness: while the recruit is under a live "hold your position" /
  *   "hold my position" Recruits order, {@link State#SEEK} will not chase a target that is
  *   out of range - the recruit holds ground and waits for the target to approach instead.
+ * - Strategic Fire support: Recruits' "Strategic Fire" command orders ranged troops to hold
+ *   ground and rain fire on a fixed area/{@link BlockPos} the owner designated, even with no
+ *   live target. The real Recruits attack goals (removed for JEG-gun-wielders by
+ *   {@link RecruitGoalOverrideHandler}) implement this; this goal now reimplements the same
+ *   behaviour itself via {@link #tickStrategicFire()} so the command is not a silent no-op.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -211,13 +221,15 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     @Override
     public boolean canUse() {
         LivingEntity target = mob.getTarget();
-        return target != null && target.isAlive();
+        if (target != null && target.isAlive()) return true;
+        // No live target - fall back to Strategic Fire so the command isn't a silent no-op
+        // for recruits wielding JEG guns (see tickStrategicFire()).
+        return getShouldStrategicFire(mob) && getStrategicFirePos(mob) != null;
     }
 
     @Override
     public boolean canContinueToUse() {
-        LivingEntity target = mob.getTarget();
-        return target != null && target.isAlive();
+        return canUse();
     }
 
     @Override
@@ -277,6 +289,11 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
         LivingEntity target = mob.getTarget();
         if (target == null || !target.isAlive()) {
+            // No live target - try Strategic Fire (area-denial order at a fixed BlockPos)
+            // before giving up. This is what keeps the command from being a silent
+            // no-op for recruits wielding JEG guns.
+            if (tickStrategicFire()) return;
+
             // leaving aim — clean up any temporary ADS modifiers
             disableAdsOnHeldGun();
             state = State.IDLE;
@@ -570,6 +587,173 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
     }
 
+    // ── Strategic Fire (area-denial command) support ───────────────────────────
+    // Recruits' "Strategic Fire" order tells ranged troops to hold ground and rain fire on a
+    // fixed area/BlockPos the owner designated, even with no live entity target. The real
+    // Recruits attack goals implement this by reading getShouldStrategicFire()/
+    // getStrategicFirePos() off the entity - but RecruitGoalOverrideHandler removes those
+    // goals for any recruit holding a JEG gun and replaces them with this class, which
+    // previously had no concept of Strategic Fire at all (canUse() required a live target).
+    // The methods below restore that behaviour without a compile-time dependency on Recruits.
+
+    /**
+     * Per-class cache of Strategic Fire accessor {@link Method} handles, following the same
+     * negative-caching pattern as {@link RecruitOwnershipHelper}. {@code IStrategicFire} only
+     * declares setters in the real mod; the getters are defined per concrete entity class
+     * (e.g. {@code BowmanEntity}, {@code CrossBowmanEntity}), so lookups are keyed by the
+     * recruit's actual runtime class and cache a miss ({@code Optional.empty()}) for entity
+     * types that don't support Strategic Fire at all.
+     */
+    private static final Map<Class<?>, Map<String, Optional<Method>>> STRATEGIC_FIRE_METHOD_CACHE = new ConcurrentHashMap<>();
+
+    private static Method resolveStrategicFireMethod(Class<?> clazz, String name) {
+        Map<String, Optional<Method>> byName =
+                STRATEGIC_FIRE_METHOD_CACHE.computeIfAbsent(clazz, c -> new ConcurrentHashMap<>());
+        Optional<Method> cached = byName.get(name);
+        if (cached != null) return cached.orElse(null);
+
+        Method found = null;
+        Class<?> walk = clazz;
+        while (walk != null && walk != Object.class) {
+            try {
+                found = walk.getDeclaredMethod(name);
+                found.setAccessible(true);
+                break;
+            } catch (NoSuchMethodException ignored) {
+                walk = walk.getSuperclass();
+            }
+        }
+        byName.put(name, Optional.ofNullable(found));
+        return found;
+    }
+
+    /** True when {@code mob} is a Recruits entity with an active Strategic Fire order. */
+    private static boolean getShouldStrategicFire(PathfinderMob mob) {
+        try {
+            Method m = resolveStrategicFireMethod(mob.getClass(), "getShouldStrategicFire");
+            if (m == null) return false;
+            Object result = m.invoke(mob);
+            return result instanceof Boolean bool && bool;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** The {@link BlockPos} Strategic Fire is targeting, or {@code null} if unset/unsupported. */
+    private static BlockPos getStrategicFirePos(PathfinderMob mob) {
+        try {
+            Method m = resolveStrategicFireMethod(mob.getClass(), "getStrategicFirePos");
+            if (m == null) return null;
+            Object result = m.invoke(mob);
+            return result instanceof BlockPos pos ? pos : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Handles Strategic Fire when there is no live target: the recruit holds its ground
+     * (no navigation at all, mirroring the real {@code RecruitRangedMusketAttackGoal}) and
+     * runs the same aim → burst-fire → cooldown/reload cycle used for entity targets, but
+     * aimed at the fixed {@link BlockPos} instead. Doctrine-driven aim/cooldown/burst tuning
+     * still applies since those only depend on distance, not on having a live entity.
+     *
+     * @return {@code true} if Strategic Fire is active and this tick was fully handled by
+     *         this method; {@code false} if it isn't active, so the caller should fall back
+     *         to its normal "no target" idle cleanup.
+     */
+    private boolean tickStrategicFire() {
+        if (!getShouldStrategicFire(mob)) return false;
+        BlockPos firePos = getStrategicFirePos(mob);
+        if (firePos == null) return false;
+
+        // Strategic Fire is area denial, not pursuit - the recruit plants its feet.
+        mob.getNavigation().stop();
+
+        Vec3 aimPoint = Vec3.atCenterOf(firePos);
+        double dist = mob.position().distanceTo(aimPoint);
+
+        switch (state) {
+            case IDLE, SEEK -> {
+                state = State.AIM;
+                aimTimer = computeAimTicks(dist);
+                enableAdsOnHeldGun();
+            }
+            case AIM -> {
+                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
+                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
+
+                float projectileSpeed = JEGCompatManager.INSTANCE.getProjectileSpeed(mob.getMainHandItem());
+                float projectileGravity = JEGCompatManager.INSTANCE.getProjectileGravity(mob.getMainHandItem());
+
+                // No entity to lead - aim at the fixed point with zero velocity.
+                applyAdvancedAim(mob, aimPoint, Vec3.ZERO, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
+
+                aimTimer--;
+                if (aimTimer <= 0) {
+                    if (remainingBurstsInCycle <= 0) {
+                        remainingBurstsInCycle = computeBurstShotsForCurrentGun();
+                        burstIntervalTick = 0;
+                        disableAdsOnHeldGun();
+                    }
+
+                    if (burstIntervalTick > 0) {
+                        burstIntervalTick--;
+                    } else {
+                        if (isGunLoaded()) {
+                            // JEGCompatManager#performGunAttack dereferences the target parameter
+                            // directly (e.g. a SMOKED status-effect check on JEG's side), so it
+                            // cannot be null. Pass the shooter itself as a harmless stand-in:
+                            // projectile direction is driven entirely by the shooter's own
+                            // yaw/pitch (set above via applyAdvancedAim), never by the target's
+                            // position, so this has no effect on where the shot actually goes.
+                            fireShot(mob);
+                            remainingBurstsInCycle--;
+                            if (remainingBurstsInCycle <= 0) {
+                                cooldownTimer = computeCooldownTicks(dist);
+                                state = State.COOLDOWN;
+                            } else {
+                                burstIntervalTick = computeBurstIntervalTicks();
+                            }
+                        } else {
+                            remainingBurstsInCycle = 0;
+                            state = State.RELOADING;
+                            reloadReadyAtTick = -1L;
+                        }
+                    }
+                }
+            }
+            case COOLDOWN -> {
+                cooldownTimer--;
+                if (cooldownTimer <= 0) {
+                    if (isGunLoaded()) {
+                        state = State.AIM;
+                        aimTimer = computeAimTicks(dist);
+                        enableAdsOnHeldGun();
+                    } else {
+                        state = State.RELOADING;
+                        reloadReadyAtTick = -1L;
+                    }
+                }
+            }
+            case RELOADING -> {
+                if (reloadReadyAtTick < 0L) {
+                    reloadReadyAtTick = mob.level().getGameTime() + computeReloadTicks();
+                }
+                boolean timerElapsed = mob.level().getGameTime() >= reloadReadyAtTick;
+                if (timerElapsed && isGunLoaded()) {
+                    state = State.AIM;
+                    aimTimer = computeAimTicks(dist);
+                    enableAdsOnHeldGun();
+                    reloadReadyAtTick = -1L;
+                } else {
+                    sendReloadBubble();
+                }
+            }
+        }
+        return true;
+    }
+
     /**
      * Returns {@code true} when the held gun has at least one ammo unit remaining.
      * Reads {@code AmmoCount} from the stack's NBT; returns {@code false} on any error
@@ -701,9 +885,17 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * Uses a stable ballistic formula and picks the lower-angle trajectory.
      */
     private static void applyAdvancedAim(PathfinderMob shooter, LivingEntity target, float projectileSpeed, float gravity, float maxYawChange, float maxPitchChange) {
-        Vec3 shooterEye = new Vec3(shooter.getX(), shooter.getEyeY(), shooter.getZ());
         Vec3 targetEye = new Vec3(target.getX(), target.getEyeY(), target.getZ());
-        Vec3 targetVel = target.getDeltaMovement(); // blocks per tick
+        applyAdvancedAim(shooter, targetEye, target.getDeltaMovement(), projectileSpeed, gravity, maxYawChange, maxPitchChange);
+    }
+
+    /**
+     * Core ballistic aim solver, parameterized on a plain aim point + velocity instead of a
+     * {@link LivingEntity} so it can also be used to aim at a fixed {@link BlockPos} (Strategic
+     * Fire, where {@code targetVel} is {@link Vec3#ZERO} since there is no entity to lead).
+     */
+    private static void applyAdvancedAim(PathfinderMob shooter, Vec3 targetEye, Vec3 targetVel, float projectileSpeed, float gravity, float maxYawChange, float maxPitchChange) {
+        Vec3 shooterEye = new Vec3(shooter.getX(), shooter.getEyeY(), shooter.getZ());
 
         // Solve intercept time ignoring gravity to get rough time-of-flight
         double t = solveInterceptTime(shooterEye, targetEye, targetVel, projectileSpeed);
