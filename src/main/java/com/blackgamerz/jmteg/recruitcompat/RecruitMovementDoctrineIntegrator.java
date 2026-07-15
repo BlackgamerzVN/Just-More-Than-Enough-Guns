@@ -143,6 +143,27 @@ public final class RecruitMovementDoctrineIntegrator {
         return null;
     }
 
+    /**
+     * Live check for whether {@code mob} is currently under a "hold your position" or
+     * "hold my position" Recruits order (follow-state 2 or 4). Unlike {@link RecruitDoctrine}
+     * (which may be commander-inherited or manually set and doesn't necessarily reflect the
+     * recruit's literal current order) this always reflects the real, current movement order,
+     * making it safe for callers such as {@link RecruitRangedGunnerAttackGoal} that need to
+     * know whether the recruit should hold ground rather than chase.
+     *
+     * <p>Performs a fresh reflective call (reusing the cached {@link Method} lookup) rather
+     * than reading {@link #lastKnownState}, since that map is only populated for recruits
+     * within {@link #PLAYER_SCAN_RADIUS} of an online player and only updated on state changes.
+     *
+     * @return {@code true} only when the live follow-state is 2 or 4; {@code false} on any
+     *         error, when the mob isn't a Recruits entity, or for any other state.
+     */
+    public static boolean isHoldingPosition(PathfinderMob mob) {
+        if (mob == null) return false;
+        Integer state = callGetFollowState(mob);
+        return state != null && (state == 2 || state == 4);
+    }
+
     private static Method findMethod(Class<?> cls, String name, Class<?>... params) {
         Map<String, Method> byName = methodCache.computeIfAbsent(cls, c -> new ConcurrentHashMap<>());
         Method cached = byName.get(name);

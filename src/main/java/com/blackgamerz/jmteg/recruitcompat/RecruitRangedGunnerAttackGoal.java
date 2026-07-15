@@ -54,6 +54,9 @@ import java.util.List;
  * - RELOADING state: when AmmoCount reaches 0 after a shot the goal enters RELOADING and waits
  *   until GunSyncGoal / RecruitAmmoResupplyGoal replenishes the magazine, emitting the JEG
  *   bubble-ammo reload indicator particle in the meantime.
+ * - Hold-position awareness: while the recruit is under a live "hold your position" /
+ *   "hold my position" Recruits order, {@link State#SEEK} will not chase a target that is
+ *   out of range - the recruit holds ground and waits for the target to approach instead.
  *
  * This class is defensive: if JEG isn't present or reflection fails it falls back to safe defaults.
  */
@@ -93,6 +96,15 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * {@link #ROLE_CACHE_INTERVAL} ticks.
      */
     private RecruitDoctrine currentDoctrine = null;
+
+    /**
+     * Whether {@code mob} is currently under a live "hold your position" / "hold my position"
+     * Recruits order. Refreshed on the same {@link #ROLE_CACHE_INTERVAL} cadence via
+     * {@link RecruitMovementDoctrineIntegrator#isHoldingPosition(PathfinderMob)}.
+     * When {@code true}, {@link State#SEEK} will not chase a target that is out of range —
+     * the recruit holds ground and waits for the target to come into effective range instead.
+     */
+    private boolean holdPosition = false;
 
     // ── Tuning: aim / cooldown timing ─────────────────────────────────────────
     private static final int MIN_AIM_TICKS = 5;
@@ -223,6 +235,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         cachedRole = null;
         cachedGunWeight = 1.0;
         currentDoctrine = null;
+        holdPosition = false;
         currentProfile = RecruitRoleProfile.forRole(null);
     }
 
@@ -249,6 +262,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             RecruitGunRole previousRole = cachedRole;
             refreshHeldGunStats(); // updates cachedRole and cachedGunWeight together (single lookup)
             RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getDoctrine(mob);
+            holdPosition = RecruitMovementDoctrineIntegrator.isHoldingPosition(mob);
             if (cachedRole != previousRole || detectedDoctrine != currentDoctrine) {
                 currentDoctrine = detectedDoctrine;
                 currentProfile  = RecruitRoleProfile.forRole(cachedRole).applyDoctrine(currentDoctrine);
@@ -288,7 +302,14 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             }
             case SEEK -> {
                 if (distSq > effectiveRangeSq) {
-                    mob.getNavigation().moveTo(target, currentProfile.approachSpeed);
+                    if (holdPosition) {
+                        // Under a live "hold your position" / "hold my position" order:
+                        // hold ground and wait for the target to come into effective range
+                        // instead of chasing it away from the assigned post.
+                        mob.getNavigation().stop();
+                    } else {
+                        mob.getNavigation().moveTo(target, currentProfile.approachSpeed);
+                    }
                 } else {
                     mob.getNavigation().stop();
                     state = State.AIM;
