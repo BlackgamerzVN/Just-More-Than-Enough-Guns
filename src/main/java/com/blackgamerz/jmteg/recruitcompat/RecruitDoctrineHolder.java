@@ -7,9 +7,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.PathfinderMob;
-import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.event.RegisterCommandsEvent;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
@@ -40,13 +38,15 @@ import java.util.WeakHashMap;
  *       squad at once.</li>
  * </ol>
  *
- * <h3>Player controls</h3>
+ * <h3>How doctrine is set</h3>
  * <ul>
- *   <li><b>Shift + right-click</b> an owned recruit with an empty main hand to cycle
- *       through all five doctrines.  A short chat message confirms the selection.</li>
+ *   <li><b>Automatic (primary path):</b> {@link RecruitMovementDoctrineIntegrator} watches
+ *       each recruit's Recruits movement/follow order and calls {@link #setDoctrine} whenever
+ *       it changes, so tactical behaviour always tracks the order the owner last gave (follow,
+ *       hold position, protect, etc). There is no manual click-to-cycle interaction anymore.</li>
  *   <li><b>{@code /jmteg doctrine &lt;NAME&gt;}</b> stores the chosen doctrine on
- *       the executing player's persistent data so all of their assigned recruits
- *       inherit it.  Accepts tab-completion.</li>
+ *       the executing player's persistent data as a squad-wide default. Recruits inherit it
+ *       via commander inheritance until their own movement order sets an individual one.</li>
  * </ul>
  */
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE)
@@ -57,15 +57,6 @@ public final class RecruitDoctrineHolder {
     /** Reflection method names tried (in order) when looking for a commander entity. */
     private static final String[] COMMANDER_METHODS = {
             "getCommander", "getCommanderEntity", "getLeader", "getFormationLeader",
-    };
-
-    /** Method names tried when checking whether a player is the mob's owner. */
-    private static final String[] OWNER_UUID_METHODS = {
-            "getOwnerUUID", "getOwnerId", "getOwnerUniqueId",
-    };
-
-    private static final String[] OWNER_ENTITY_METHODS = {
-            "getOwner", "getMaster",
     };
 
     /**
@@ -160,44 +151,6 @@ public final class RecruitDoctrineHolder {
         return null;
     }
 
-    // ── Shift-right-click interaction ─────────────────────────────────────────
-
-    /**
-     * Cycles the doctrine of a recruit when its owner shift-right-clicks it
-     * with an empty main hand.
-     *
-     * <p>The interaction is cancelled so vanilla trade/follow screens are not
-     * opened when the player is cycling doctrines.  Only the mob's direct owner
-     * can do this.</p>
-     */
-    @SubscribeEvent
-    public static void onPlayerInteract(PlayerInteractEvent.EntityInteract event) {
-        Player player = event.getEntity();
-        if (player.level().isClientSide()) return;
-        if (!player.isShiftKeyDown()) return;
-        if (!player.getMainHandItem().isEmpty()) return;
-        if (!(event.getTarget() instanceof PathfinderMob recruit)) return;
-        if (!RecruitOwnershipHelper.isAmmoAwareRecruit(recruit)) return;
-        if (!isOwnedByPlayer(recruit, player)) return;
-
-        // Determine the recruit's current personal doctrine (ignoring inherited ones)
-        String personal = recruit.getPersistentData().getString(RecruitDoctrine.NBT_KEY);
-        RecruitDoctrine personalDoctrine = personal.isEmpty()
-                ? null
-                : RecruitDoctrine.fromName(personal);
-
-        // Cycle: null → first doctrine, then next, then wrap around
-        RecruitDoctrine next = personalDoctrine == null
-                ? RecruitDoctrine.values()[0]
-                : personalDoctrine.next();
-
-        setDoctrine(recruit, next);
-        player.sendSystemMessage(Component.literal(
-                "§e[Recruit] Doctrine: §a" + next.displayName
-                + " §7(" + describeDoctrineShort(next) + ")"));
-        event.setCanceled(true);
-    }
-
     // ── Command: /jmteg doctrine <NAME> ──────────────────────────────────────
 
     /**
@@ -255,31 +208,6 @@ public final class RecruitDoctrineHolder {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    /**
-     * Returns {@code true} when {@code player} is confirmed as the direct owner
-     * of {@code mob} via soft-dependency reflection (UUID and live-entity checks).
-     */
-    private static boolean isOwnedByPlayer(PathfinderMob mob, Player player) {
-        for (String m : OWNER_UUID_METHODS) {
-            try {
-                Method method = findMethod(mob, m);
-                if (method == null) continue;
-                Object result = method.invoke(mob);
-                if (result instanceof java.util.UUID uuid && uuid.equals(player.getUUID())) return true;
-            } catch (Exception ignored) {}
-        }
-        for (String m : OWNER_ENTITY_METHODS) {
-            try {
-                Method method = findMethod(mob, m);
-                if (method == null) continue;
-                Object result = method.invoke(mob);
-                if (result instanceof net.minecraft.world.entity.LivingEntity le
-                        && le.getUUID().equals(player.getUUID())) return true;
-            } catch (Exception ignored) {}
-        }
-        return false;
-    }
 
     /**
      * Walks the class hierarchy of {@code obj} looking for a no-arg method with

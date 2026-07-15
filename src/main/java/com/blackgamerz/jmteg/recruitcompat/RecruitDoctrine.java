@@ -22,14 +22,15 @@ package com.blackgamerz.jmteg.recruitcompat;
  *
  * <h3>Setting a doctrine</h3>
  * <ul>
- *   <li><b>Per recruit:</b> the recruit's owner can <b>shift-right-click</b> it with
- *       an empty main hand to cycle through all five doctrines.  A chat message
- *       confirms the new selection.  The choice is stored in the mob's
+ *   <li><b>Automatic (per recruit):</b> {@code RecruitMovementDoctrineIntegrator} tracks each
+ *       recruit's current Recruits movement/follow order and assigns the matching doctrine
+ *       automatically&mdash;no manual interaction is required. The choice is stored in the mob's
  *       {@link net.minecraft.world.entity.Entity#getPersistentData() persistent data}
  *       and survives server reloads.</li>
  *   <li><b>Per squad (commander):</b> running {@code /jmteg doctrine <NAME>} stores the
- *       doctrine on the executing player (or entity).  Any recruit assigned to that
- *       commander that has no individual doctrine will inherit it automatically.</li>
+ *       doctrine on the executing player (or entity) as a squad-wide default. Any recruit
+ *       assigned to that commander that has no individual doctrine yet will inherit it
+ *       automatically.</li>
  * </ul>
  *
  * @see RecruitDoctrineHolder
@@ -151,15 +152,6 @@ public enum RecruitDoctrine {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    /**
-     * Returns the next doctrine in cycle order, wrapping from the last back to the
-     * first.  Used by the shift-right-click toggle in {@link RecruitDoctrineHolder}.
-     */
-    public RecruitDoctrine next() {
-        RecruitDoctrine[] values = values();
-        return values[(this.ordinal() + 1) % values.length];
-    }
 
     /**
      * Parses a doctrine by its enum constant name (case-insensitive).

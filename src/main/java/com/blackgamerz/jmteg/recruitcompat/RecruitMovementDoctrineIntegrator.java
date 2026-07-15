@@ -1,7 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.Main;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -28,7 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *  - Scans only in the vicinity of online players (player bounding box inflated by PLAYER_SCAN_RADIUS).
  *  - Uses reflection and class-name checks to detect Talhanation Recruits entities without
  *    creating a hard dependency on that mod.
- *  - Respects personal doctrine stored in recruit persistent data unless CONFIG_OVERRIDE_PERSONAL is true.
+ *  - Is the sole, authoritative source of a recruit's doctrine: whenever the owner issues a
+ *    movement/follow command (tracked via {@code getFollowState()}), the mapped doctrine is
+ *    written straight to {@link RecruitDoctrineHolder}. There is no manual click-to-cycle
+ *    override anymore, so a recruit's tactical behaviour always follows its current orders.
  *  - Optionally verifies the recruit is affected by the player who issued the command by calling
  *    isEffectedByCommand(UUID) reflectively.
  *
@@ -42,15 +44,14 @@ public final class RecruitMovementDoctrineIntegrator {
     private static final int SCAN_INTERVAL_TICKS = 10;      // how often we run the scan
     private static final double PLAYER_SCAN_RADIUS = 100.0; // matches Recruits' packet-range
 
-    // If true, overwrite a recruit's personal doctrine (shift-right-click choice) when movement command maps a doctrine.
-    private static final boolean CONFIG_OVERRIDE_PERSONAL = false;
-
     // If true, require recruit.isEffectedByCommand(playerUUID) to be true before applying doctrine for that player.
     private static final boolean REQUIRE_EFFECTED_BY_COMMAND = true;
 
     // Internal caches
     private static final Map<PathfinderMob, Integer> lastKnownState = new WeakHashMap<>();
-    private static final Map<Class<?>, Method> methodCache = new ConcurrentHashMap<>();
+    // Keyed by (class, methodName) so distinct reflective lookups (isEffectedByCommand vs.
+    // getFollowState) on the same recruit class don't evict one another.
+    private static final Map<Class<?>, Map<String, Method>> methodCache = new ConcurrentHashMap<>();
 
     private static int tickCounter = 0;
 
@@ -93,23 +94,12 @@ public final class RecruitMovementDoctrineIntegrator {
                 }
 
                 Integer state = callGetFollowState(mob);
-                Boolean inOrder = callGetIsInOrder(mob);
                 if (state == null) continue;
 
                 Integer prev = lastKnownState.get(mob);
                 if (prev != null && prev.equals(state)) continue; // nothing changed
 
                 lastKnownState.put(mob, state);
-
-                // only apply doctrine when recruit is in order (following commands) — keep safe default
-                if (inOrder == null || !inOrder) continue;
-
-                // Respect personal doctrine unless configured otherwise
-                String personal = readPersonalDoctrineNBT(mob);
-                if (!CONFIG_OVERRIDE_PERSONAL && personal != null && !personal.isEmpty()) {
-                    // recruit has explicit personal doctrine -> skip
-                    continue;
-                }
 
                 RecruitDoctrine doc = mapStateToDoctrine(state);
                 if (doc == null) {
@@ -153,34 +143,15 @@ public final class RecruitMovementDoctrineIntegrator {
         return null;
     }
 
-    private static Boolean callGetIsInOrder(PathfinderMob mob) {
-        try {
-            Method m = findMethod(mob.getClass(), "getIsInOrder");
-            if (m == null) return null;
-            Object res = m.invoke(mob);
-            if (res instanceof Boolean b) return b;
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    private static String readPersonalDoctrineNBT(PathfinderMob mob) {
-        try {
-            CompoundTag tag = mob.getPersistentData();
-            if (tag == null) return null;
-            return tag.getString(RecruitDoctrine.NBT_KEY);
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
     private static Method findMethod(Class<?> cls, String name, Class<?>... params) {
-        try {
-            Class<?> key = cls;
-            Method cached = methodCache.get(key);
-            if (cached != null && cached.getName().equals(name)) return cached;
+        Map<String, Method> byName = methodCache.computeIfAbsent(cls, c -> new ConcurrentHashMap<>());
+        Method cached = byName.get(name);
+        if (cached != null) return cached;
 
+        try {
             Method m = cls.getMethod(name, params);
             m.setAccessible(true);
-            methodCache.put(key, m);
+            byName.put(name, m);
             return m;
         } catch (Throwable t) {
             // walk up class hierarchy searching for the method
@@ -194,12 +165,14 @@ public final class RecruitMovementDoctrineIntegrator {
 
     /**
      * Default mapping from Recruits movement states to doctrines.
+     * Values match {@code AbstractRecruitEntity#getFollowState()} in the real Recruits mod:
+     * 0=wander, 1=follow, 2=hold your position, 3=back to position, 4=hold my position,
+     * 5=Protect, 6=Work. No values above 6 exist.
      * Adjust or make configurable as needed.
      */
     private static RecruitDoctrine mapStateToDoctrine(int state) {
-        // See Recruits' CommandEvents mapping comments
         switch (state) {
-            case 0: // wander
+            case 0: // wander - no orders in effect, leave doctrine unchanged
                 return null;
             case 1: // follow
                 return RecruitDoctrine.SKIRMISHER;
@@ -208,12 +181,10 @@ public final class RecruitMovementDoctrineIntegrator {
                 return RecruitDoctrine.DEFENSIVE;
             case 3: // back to position
                 return RecruitDoctrine.DEFENSIVE;
-            case 5: // protect
-                return RecruitDoctrine.DEFENSIVE;
-            case 6: // move
-            case 7: // forward
-            case 8: // backward
-                return RecruitDoctrine.AGGRESSIVE;
+            case 5: // Protect - close-protection detail
+                return RecruitDoctrine.ESCORT;
+            case 6: // Work - non-combat task, leave doctrine unchanged
+                return null;
             default:
                 return null;
         }

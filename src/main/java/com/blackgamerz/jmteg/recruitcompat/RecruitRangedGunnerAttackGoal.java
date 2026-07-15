@@ -73,6 +73,11 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     /** Last detected gun role (null = unknown / not in any pool). */
     private RecruitGunRole cachedRole = null;
+    /**
+     * Role-preference weight (0.0-1.0) of the currently held gun, refreshed on the same
+     * cadence as {@link #cachedRole}. See {@link #refreshHeldGunStats()}.
+     */
+    private double cachedGunWeight = 1.0;
     /** Movement/positioning profile derived from {@link #cachedRole} and {@link #currentDoctrine}. */
     private RecruitRoleProfile currentProfile = RecruitRoleProfile.forRole(null);
     /** Counts down from ROLE_CACHE_INTERVAL; profile is refreshed when it reaches 0. */
@@ -216,6 +221,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         // Force profile and doctrine re-detection on next tick so the goal starts with current info
         roleCacheTick = 0;
         cachedRole = null;
+        cachedGunWeight = 1.0;
         currentDoctrine = null;
         currentProfile = RecruitRoleProfile.forRole(null);
     }
@@ -240,10 +246,10 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         roleCacheTick--;
         if (roleCacheTick <= 0) {
             roleCacheTick = ROLE_CACHE_INTERVAL;
-            RecruitGunRole detectedRole = detectHeldGunRole();
+            RecruitGunRole previousRole = cachedRole;
+            refreshHeldGunStats(); // updates cachedRole and cachedGunWeight together (single lookup)
             RecruitDoctrine detectedDoctrine = RecruitDoctrineHolder.getDoctrine(mob);
-            if (detectedRole != cachedRole || detectedDoctrine != currentDoctrine) {
-                cachedRole      = detectedRole;
+            if (cachedRole != previousRole || detectedDoctrine != currentDoctrine) {
                 currentDoctrine = detectedDoctrine;
                 currentProfile  = RecruitRoleProfile.forRole(cachedRole).applyDoctrine(currentDoctrine);
                 LOGGER.debug("{} switched to role profile {} (role={}, doctrine={})",
@@ -427,8 +433,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int computeAimTicks(double distance) {
         double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
-        double weight   = getHeldGunWeight();
-        double penalty  = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double penalty  = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - cachedGunWeight);
         double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
         return (int) Math.round(base * penalty * conserve);
     }
@@ -436,8 +441,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     private int computeCooldownTicks(double distance) {
         double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
-        double weight   = getHeldGunWeight();
-        double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
+        double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - cachedGunWeight);
         double conserve = currentDoctrine != null ? currentDoctrine.ammoConservation : 1.0;
         return (int) Math.round(base * penalty * conserve);
     }
@@ -801,19 +805,38 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * </ul>
      * Returns 1.0 (no penalty) on any error or when no gun is held.
      */
-    private double getHeldGunWeight() {
+    /**
+     * Refreshes {@link #cachedRole} and {@link #cachedGunWeight} together from a single
+     * registry/tier lookup. Previously each was recomputed independently (role once per
+     * refresh window, weight from scratch on every tick via {@code getEffectiveAttackRange()}
+     * and on every AIM/COOLDOWN transition) which repeated the same registry key resolution,
+     * class-key detection, and tier lookup dozens of times per second per active recruit.
+     * Resets both to safe defaults (role=null, weight=1.0 i.e. no penalty) on any error or
+     * when no gun is held.
+     */
+    private void refreshHeldGunStats() {
         try {
             ItemStack stack = mob.getMainHandItem();
-            if (stack == null || stack.isEmpty()) return 1.0;
+            if (stack == null || stack.isEmpty()) {
+                cachedRole = null;
+                cachedGunWeight = 1.0;
+                return;
+            }
             ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-            if (id == null) return 1.0;
+            if (id == null) {
+                cachedRole = null;
+                cachedGunWeight = 1.0;
+                return;
+            }
             RecruitLoadoutConfigManager.ensureLoaded();
             String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
             RecruitLoadoutConfigManager.RecruitTierConfig tier =
                     RecruitLoadoutConfigManager.getTierConfig(classKey);
-            return RecruitGunSelector.getRoleWeight(id, tier);
+            cachedRole = RecruitGunSelector.detectRole(id, tier);
+            cachedGunWeight = RecruitGunSelector.getRoleWeight(id, tier);
         } catch (Throwable t) {
-            return 1.0; // safe: no penalty when information is unavailable
+            cachedRole = null;
+            cachedGunWeight = 1.0;
         }
     }
 
@@ -824,29 +847,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * {@code currentProfile.preferredRange × MIN_RANGE_FACTOR}.
      */
     private double getEffectiveAttackRange() {
-        double weight = getHeldGunWeight();
-        return currentProfile.preferredRange * (MIN_RANGE_FACTOR + weight * (1.0 - MIN_RANGE_FACTOR));
-    }
-
-    /**
-     * Detects the {@link RecruitGunRole} of the held gun within this recruit's tier config.
-     * Returns {@code null} when the gun is not in any accessible role pool (the weight
-     * system will already penalise that case; the profile falls back to BASIC_RANGED).
-     */
-    private RecruitGunRole detectHeldGunRole() {
-        try {
-            ItemStack stack = mob.getMainHandItem();
-            if (stack == null || stack.isEmpty()) return null;
-            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-            if (id == null) return null;
-            RecruitLoadoutConfigManager.ensureLoaded();
-            String classKey = RecruitGunSelector.detectRecruitClassKey(mob);
-            RecruitLoadoutConfigManager.RecruitTierConfig tier =
-                    RecruitLoadoutConfigManager.getTierConfig(classKey);
-            return RecruitGunSelector.detectRole(id, tier);
-        } catch (Throwable t) {
-            return null;
-        }
+        return currentProfile.preferredRange * (MIN_RANGE_FACTOR + cachedGunWeight * (1.0 - MIN_RANGE_FACTOR));
     }
 
     /**
@@ -856,8 +857,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * with a weapon they are not trained to use).
      */
     private float computeAdsSpreadMultiplier() {
-        double weight = getHeldGunWeight();
-        return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - weight));
+        return (float) (ADS_SPREAD_MULTIPLIER + (1.0 - ADS_SPREAD_MULTIPLIER) * (1.0 - cachedGunWeight));
     }
 
     // ── Role-aware target selection ───────────────────────────────────────────
