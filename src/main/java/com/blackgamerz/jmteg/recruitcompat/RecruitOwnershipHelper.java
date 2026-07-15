@@ -5,8 +5,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Determines whether a recruit should use ammo-aware behaviour (ammo consumption,
@@ -183,22 +185,43 @@ public final class RecruitOwnershipHelper {
     // ── Reflection helper ─────────────────────────────────────────────────────
 
     /**
+     * Per-class method cache keyed by method name. Avoids re-walking the class
+     * hierarchy (getMethod/getDeclaredMethod) on every ownership/faction check,
+     * which previously ran on every entity join and equipment-change event.
+     * A cached {@code null} value (via {@link Optional#empty()}) records a
+     * confirmed miss so failed lookups aren't retried every call either.
+     */
+    private static final Map<Class<?>, Map<String, Optional<Method>>> METHOD_CACHE = new ConcurrentHashMap<>();
+
+    /**
      * Attempts to find a no-arg method by name in the entity's class hierarchy.
-     * Returns {@code null} (never throws) if not found.
+     * Returns {@code null} (never throws) if not found. Results are cached per
+     * concrete class + method name.
      */
     private static Method findMethod(Object obj, String name) {
+        Class<?> clazz = obj.getClass();
+        Map<String, Optional<Method>> byName = METHOD_CACHE.computeIfAbsent(clazz, c -> new ConcurrentHashMap<>());
+        Optional<Method> cached = byName.get(name);
+        if (cached != null) return cached.orElse(null);
+
+        Method found = resolveMethod(clazz, name);
+        byName.put(name, Optional.ofNullable(found));
+        return found;
+    }
+
+    private static Method resolveMethod(Class<?> clazz, String name) {
         try {
-            return obj.getClass().getMethod(name);
+            return clazz.getMethod(name);
         } catch (NoSuchMethodException ignored) {}
         // Walk declared methods as fallback (handles package-private / protected)
-        Class<?> clazz = obj.getClass();
-        while (clazz != null && clazz != Object.class) {
+        Class<?> walk = clazz;
+        while (walk != null && walk != Object.class) {
             try {
-                Method m = clazz.getDeclaredMethod(name);
+                Method m = walk.getDeclaredMethod(name);
                 m.setAccessible(true);
                 return m;
             } catch (NoSuchMethodException ignored) {}
-            clazz = clazz.getSuperclass();
+            walk = walk.getSuperclass();
         }
         return null;
     }

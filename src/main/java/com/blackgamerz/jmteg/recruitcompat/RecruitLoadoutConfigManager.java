@@ -179,8 +179,16 @@ public final class RecruitLoadoutConfigManager {
                     List<ResourceLocation> guns = new ArrayList<>();
                     for (String id : e.getValue().guns) {
                         ResourceLocation rl = ResourceLocation.tryParse(id);
-                        if (rl != null) guns.add(rl);
-                        else LOGGER.warn("RecruitLoadoutConfigManager: invalid gun id '{}' in role {}", id, role);
+                        if (rl == null) {
+                            LOGGER.warn("RecruitLoadoutConfigManager: invalid gun id '{}' in role {}", id, role);
+                            continue;
+                        }
+                        if (!net.minecraftforge.registries.ForgeRegistries.ITEMS.containsKey(rl)) {
+                            LOGGER.warn("RecruitLoadoutConfigManager: gun id '{}' in role {} is not a registered item " +
+                                    "(JEG not installed, or the item id changed/was removed) — keeping it in the pool " +
+                                    "but it will never match an actual item", rl, role);
+                        }
+                        guns.add(rl);
                     }
                     ROLE_GUN_POOLS.put(role, Collections.unmodifiableList(guns));
                 }
@@ -195,7 +203,13 @@ public final class RecruitLoadoutConfigManager {
                     for (JsonRoleWeight jrw : jt.roles) {
                         try {
                             RecruitGunRole gwRole = RecruitGunRole.valueOf(jrw.role.toUpperCase(Locale.ROOT));
-                            rws.add(new RoleWeight(gwRole, jrw.weight));
+                            double weight = jrw.weight;
+                            if (weight < 0.0 || weight > 1.0) {
+                                LOGGER.warn("RecruitLoadoutConfigManager: weight {} for role '{}' in tier {} is out of " +
+                                        "range [0.0, 1.0] — clamping", weight, jrw.role, key);
+                                weight = Math.max(0.0, Math.min(1.0, weight));
+                            }
+                            rws.add(new RoleWeight(gwRole, weight));
                         } catch (IllegalArgumentException ex) {
                             LOGGER.warn("RecruitLoadoutConfigManager: unknown role '{}' in tier {}", jrw.role, key);
                         }

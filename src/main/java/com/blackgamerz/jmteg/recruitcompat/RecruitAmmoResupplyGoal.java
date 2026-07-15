@@ -9,13 +9,16 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.chunk.LevelChunk;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * AI Goal that automates ammo resupply for recruits carrying JEG guns.
@@ -289,31 +292,47 @@ public class RecruitAmmoResupplyGoal extends Goal {
 
     // ── Strategy 3: chest search ──────────────────────────────────────────────
 
+    /**
+     * Searches for the nearest container holding ammo for {@code gunStack} within
+     * {@link #CHEST_SEARCH_RADIUS} blocks.
+     *
+     * <p>Iterates only over loaded chunks in range and each chunk's actually-tracked
+     * block entities ({@link LevelChunk#getBlockEntities()}), rather than probing every
+     * individual block position in the search volume. For a 16-block radius that is the
+     * difference between ~5,000+ per-position {@code getBlockEntity()} calls and a
+     * handful of chunk lookups plus however many block entities are actually placed
+     * nearby — a significant reduction with many recruits resupplying simultaneously.
+     */
     private BlockPos findNearbyChestWithAmmo(ItemStack gunStack) {
         BlockPos center = mob.blockPosition();
         int r = (int) CHEST_SEARCH_RADIUS;
-        int rSq = r * r;
+        double rSq = CHEST_SEARCH_RADIUS * CHEST_SEARCH_RADIUS;
         BlockPos nearest     = null;
         double   nearestDist = Double.MAX_VALUE;
 
-        for (int dx = -r; dx <= r; dx++) {
-            for (int dz = -r; dz <= r; dz++) {
-                // Restrict to a circular horizontal radius to skip corner positions
-                if (dx * dx + dz * dz > rSq) continue;
-                for (int dy = -CHEST_SEARCH_HALF_HEIGHT; dy <= CHEST_SEARCH_HALF_HEIGHT; dy++) {
-                    BlockPos pos = center.offset(dx, dy, dz);
-                    // Skip unloaded chunks to avoid chunk-loading side effects
-                    if (!mob.level().hasChunkAt(pos)) continue;
+        Level level = mob.level();
+        int minChunkX = (center.getX() - r) >> 4;
+        int maxChunkX = (center.getX() + r) >> 4;
+        int minChunkZ = (center.getZ() - r) >> 4;
+        int maxChunkZ = (center.getZ() + r) >> 4;
+
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                if (!level.hasChunk(cx, cz)) continue;
+                LevelChunk chunk = level.getChunk(cx, cz);
+                for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
+                    BlockPos pos = entry.getKey();
+                    if (Math.abs(pos.getY() - center.getY()) > CHEST_SEARCH_HALF_HEIGHT) continue;
+                    double distSq = center.distSqr(pos);
+                    if (distSq > rSq || distSq >= nearestDist) continue;
+                    if (!(entry.getValue() instanceof Container container)) continue;
                     try {
-                        BlockEntity be = mob.level().getBlockEntity(pos);
-                        if (!(be instanceof Container container)) continue;
                         if (!containerHasAmmoForGun(container, gunStack)) continue;
-                        double distSq = center.distSqr(pos);
-                        if (distSq < nearestDist) {
-                            nearestDist = distSq;
-                            nearest     = pos;
-                        }
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable ignored) {
+                        continue;
+                    }
+                    nearestDist = distSq;
+                    nearest     = pos;
                 }
             }
         }
