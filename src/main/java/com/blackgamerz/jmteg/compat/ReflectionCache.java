@@ -59,6 +59,10 @@ public final class ReflectionCache {
     public static final String METHOD_SET_ITEM = "setItem";
     public static final String METHOD_SET_CHANGED = "setChanged";
 
+    // Reflective field names shared across compat classes (Recruits inventory access)
+    public static final String FIELD_INVENTORY = "inventory";
+    public static final String FIELD_ITEMS = "items";
+
     // ── Top-level JEG classes ─────────────────────────────────────────────────
     private static volatile Class<?> jegGunItemClass;
     private static volatile Class<?> jegCommonGunClass;
@@ -411,4 +415,43 @@ public final class ReflectionCache {
         }
         return null;
     }
+
+    // Optional.empty() memoizes a confirmed "not found" the same way METHOD_CACHE does,
+    // so repeated per-tick field probes (e.g. Recruits inventory access) are O(1).
+    private static final Map<FieldKey, Optional<Field>> FIELD_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * Finds a field by name on {@code clazz} or any of its superclasses via
+     * {@code getDeclaredField} (with {@code setAccessible(true)}), memoizing the
+     * result (including "not found") per (class, name) so repeated lookups on the
+     * same soft-dependency class are O(1) map lookups instead of repeated
+     * reflective class-hierarchy walks.
+     *
+     * @return the resolved, accessible {@link Field}, or {@code null} if none was found
+     */
+    public static Field findField(Class<?> clazz, String name) {
+        if (clazz == null || name == null) return null;
+        FieldKey key = new FieldKey(clazz, name);
+        Optional<Field> cached = FIELD_CACHE.get(key);
+        if (cached != null) return cached.orElse(null);
+
+        Field resolved = resolveField(clazz, name);
+        FIELD_CACHE.put(key, Optional.ofNullable(resolved));
+        return resolved;
+    }
+
+    private static Field resolveField(Class<?> clazz, String name) {
+        Class<?> c = clazz;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (Throwable ignored) {}
+            c = c.getSuperclass();
+        }
+        return null;
+    }
+
+    private record FieldKey(Class<?> owner, String name) {}
 }
