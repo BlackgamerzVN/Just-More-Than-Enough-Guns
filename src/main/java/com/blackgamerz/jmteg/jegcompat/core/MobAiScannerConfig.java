@@ -1,22 +1,14 @@
 package com.blackgamerz.jmteg.jegcompat.core;
 
+import com.blackgamerz.jmteg.util.JsonConfigIO;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import net.minecraftforge.fml.loading.FMLPaths;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.Reader;
-import java.io.Writer;
 import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
 
 /**
  * Loads/writes config/just_more_than_enough_guns/scanner.json, which controls how
@@ -44,32 +36,19 @@ public final class MobAiScannerConfig {
         if (loaded) return;
         loaded = true;
 
-        File cfgDir = FMLPaths.CONFIGDIR.get().toFile();
-        File modDir = new File(cfgDir, SUBPATH);
-        if (!modDir.exists() && !modDir.mkdirs()) {
-            LOGGER.warn("MobAiScannerConfig: failed to create config dir {}", modDir.getAbsolutePath());
-        }
+        File modDir = JsonConfigIO.resolveConfigDir(SUBPATH, LOGGER);
         File cfgFile = new File(modDir, FILE_NAME);
         if (!cfgFile.exists()) {
             this.config = new Values();
-            try (Writer w = new OutputStreamWriter(new FileOutputStream(cfgFile), StandardCharsets.UTF_8)) {
-                GSON.toJson(this.config, w);
-                LOGGER.info("MobAiScannerConfig: wrote default scanner config to {}", cfgFile.getAbsolutePath());
-            } catch (IOException ex) {
-                LOGGER.error("MobAiScannerConfig: failed to write default config", ex);
-            }
+            JsonConfigIO.writeJson(GSON, cfgFile, this.config, LOGGER);
+            LOGGER.info("MobAiScannerConfig: wrote default scanner config to {}", cfgFile.getAbsolutePath());
             return;
         }
 
-        try (Reader r = new InputStreamReader(new FileInputStream(cfgFile), StandardCharsets.UTF_8)) {
-            Type type = new TypeToken<Values>() {}.getType();
-            Values read = GSON.fromJson(r, type);
-            this.config = read == null ? new Values() : read;
-            LOGGER.info("MobAiScannerConfig: loaded scanner config (intervalTicks={}, radius={})", this.config.intervalTicks, this.config.radius);
-        } catch (IOException ex) {
-            LOGGER.error("MobAiScannerConfig: failed to read config, using defaults", ex);
-            this.config = new Values();
-        }
+        Type type = new TypeToken<Values>() {}.getType();
+        Values read = JsonConfigIO.readJson(GSON, cfgFile, type, LOGGER);
+        this.config = read == null ? new Values() : read;
+        LOGGER.info("MobAiScannerConfig: loaded scanner config (intervalTicks={}, radius={})", this.config.intervalTicks, this.config.radius);
     }
 
     public Values get() {

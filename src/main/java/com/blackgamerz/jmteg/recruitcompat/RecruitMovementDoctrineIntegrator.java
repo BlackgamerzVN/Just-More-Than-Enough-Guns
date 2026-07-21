@@ -138,7 +138,9 @@ public final class RecruitMovementDoctrineIntegrator {
             if (m == null) return null;
             Object res = m.invoke(mob, playerUUID);
             if (res instanceof Boolean b) return b;
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("callIsEffectedByCommand: reflective invoke failed for {}", mob.getClass(), t);
+        }
         return null;
     }
 
@@ -148,7 +150,9 @@ public final class RecruitMovementDoctrineIntegrator {
             if (m == null) return null;
             Object res = m.invoke(mob);
             if (res instanceof Integer i) return i;
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("callGetFollowState: reflective invoke failed for {}", mob.getClass(), t);
+        }
         return null;
     }
 
@@ -158,7 +162,9 @@ public final class RecruitMovementDoctrineIntegrator {
             if (m == null) return null;
             Object res = m.invoke(mob);
             if (res instanceof Boolean b) return b;
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("callGetIsInOrder: reflective invoke failed for {}", mob.getClass(), t);
+        }
         return null;
     }
 
@@ -167,7 +173,9 @@ public final class RecruitMovementDoctrineIntegrator {
             CompoundTag tag = mob.getPersistentData();
             if (tag == null) return null;
             return tag.getString(RecruitDoctrine.NBT_KEY);
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("readPersonalDoctrineNBT: failed to read persistent data for {}", mob.getClass(), t);
+        }
         return null;
     }
 

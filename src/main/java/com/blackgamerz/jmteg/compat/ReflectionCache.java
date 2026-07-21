@@ -203,6 +203,14 @@ public final class ReflectionCache {
                         jegCommonGunClass, float.class, boolean.class);
             } catch (Throwable ignored) {}
         }
+
+        // Individual class/method probes above are intentionally silent (JEG is a soft
+        // dependency and most probes are expected to miss when it isn't installed); log a
+        // single debug-level summary here instead of noise per probe.
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("ReflectionCache: JEG static init resolved jegGunItemClass={}, jegCommonGunClass={}, jegGunEventBusClass={}, jegAiGunEventClass={}",
+                    jegGunItemClass != null, jegCommonGunClass != null, jegGunEventBusClass != null, jegAiGunEventClass != null);
+        }
     }
 
     // ── Public getters ────────────────────────────────────────────────────────
@@ -395,6 +403,9 @@ public final class ReflectionCache {
         if (cached != null) return cached.orElse(null);
 
         Method resolved = resolveMethod(clazz, name, params);
+        if (resolved == null) {
+            LOGGER.debug("ReflectionCache: method '{}' not found on {} (or superclasses) - soft-dependency probe miss is expected if the owning mod isn't loaded", name, clazz.getName());
+        }
         METHOD_CACHE.put(key, Optional.ofNullable(resolved));
         return resolved;
     }
@@ -436,6 +447,9 @@ public final class ReflectionCache {
         if (cached != null) return cached.orElse(null);
 
         Field resolved = resolveField(clazz, name);
+        if (resolved == null) {
+            LOGGER.debug("ReflectionCache: field '{}' not found on {} (or superclasses) - soft-dependency probe miss is expected if the owning mod isn't loaded", name, clazz.getName());
+        }
         FIELD_CACHE.put(key, Optional.ofNullable(resolved));
         return resolved;
     }

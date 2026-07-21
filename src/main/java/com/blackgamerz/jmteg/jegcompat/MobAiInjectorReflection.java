@@ -12,15 +12,15 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
 import net.minecraft.resources.ResourceLocation;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.*;
 
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE, modid = Main.MOD_ID)
 public final class MobAiInjectorReflection {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(MobAiInjectorReflection.class);
+    private static final Logger LOGGER = LogManager.getLogger(MobAiInjectorReflection.class);
 
     private static ResourceLocation rl(String ns, String path) {
         ResourceLocation parsed = ResourceLocation.tryParse(ns + ":" + path);

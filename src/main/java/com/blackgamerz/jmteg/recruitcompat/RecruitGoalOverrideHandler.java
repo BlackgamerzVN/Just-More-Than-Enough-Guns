@@ -111,7 +111,9 @@ public final class RecruitGoalOverrideHandler {
                         if (name.equals(RecruitRangedGunnerAttackGoal.class.getName())) hasAttackGoal   = true;
                         if (name.equals(RecruitAmmoResupplyGoal.class.getName()))       hasResupplyGoal = true;
                     }
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    LOGGER.debug("addFallbackIfMissing: failed to inspect goal entry {}", entry.getClass(), t);
+                }
             }
         }
 
@@ -150,7 +152,9 @@ public final class RecruitGoalOverrideHandler {
                     if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
                         hasAttackGoal = true;
                     }
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    LOGGER.debug("addAttackGoalOnly: failed to inspect goal entry {}", entry.getClass(), t);
+                }
             }
         }
 

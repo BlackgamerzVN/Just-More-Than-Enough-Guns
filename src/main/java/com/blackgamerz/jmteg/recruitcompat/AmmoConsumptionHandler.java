@@ -65,7 +65,9 @@ public class AmmoConsumptionHandler {
                         }
                     }
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("tryReloadFromInventory: reflective reload attempt failed for {}", mob, t);
+            }
         }
 
         // 2. Player inventory

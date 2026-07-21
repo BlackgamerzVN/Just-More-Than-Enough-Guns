@@ -274,7 +274,9 @@ public class RecruitAmmoResupplyGoal extends Goal {
                 AmmoConsumptionHandler.setAmmoCount(gunStack, curAmmo + take);
                 return true;
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("tryDonateFromNearbyAllies: failed while attempting ammo donation for {}", mob, t);
+        }
         return false;
     }
 
@@ -367,7 +369,9 @@ public class RecruitAmmoResupplyGoal extends Goal {
                 LOGGER.debug("{} switched to backup weapon from inventory slot {}", mob, i);
                 return true;
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("trySwitchBackupWeapon: failed while attempting weapon switch for {}", mob, t);
+        }
         return false;
     }
 }

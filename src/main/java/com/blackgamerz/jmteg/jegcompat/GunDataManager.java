@@ -5,8 +5,8 @@ import com.google.gson.JsonParser;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistries;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -16,7 +16,7 @@ import java.util.Map;
 
 public class GunDataManager {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(GunDataManager.class);
+    private static final Logger LOGGER = LogManager.getLogger(GunDataManager.class);
     private static final Map<ResourceLocation, JsonObject> gunConfigCache = new HashMap<>();
 
     /**
