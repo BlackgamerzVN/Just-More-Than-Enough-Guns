@@ -1,4 +1,4 @@
-package com.blackgamerz.jmteg.jegcompat.jegCompatCore;
+package com.blackgamerz.jmteg.jegcompat.core;
 
 import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.google.gson.Gson;
@@ -48,7 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE, modid = "jmteg")
 public final class MobAiInjector {
-    private static final Logger LOG = LogManager.getLogger("jmteg");
+    private static final Logger LOGGER = LogManager.getLogger("jmteg");
 
     private static final Map<UUID, ServerLevel> watchedLevels = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> lastAmmoCounts = new ConcurrentHashMap<>();
@@ -99,7 +99,7 @@ public final class MobAiInjector {
             poolId = d.poolId;
             maxAmmo = d.maxAmmo;
             reloadKind = d.kind;
-            LOG.debug("Dynamic JEG detection (join): {} => pool {}, maxAmmo {}", itemKey, poolId, maxAmmo);
+            LOGGER.debug("Dynamic JEG detection (join): {} => pool {}, maxAmmo {}", itemKey, poolId, maxAmmo);
         }
 
         if (poolId == null) return;
@@ -115,19 +115,19 @@ public final class MobAiInjector {
                     MobAmmoHelper.addAmmo(mob, poolId, inventoryAmmo);
                 }
                 mob.addTag(SEEDED_TAG);
-                LOG.info("Join: seeded mob {} pool {} from inventory ({} items) -> pool={}", mob.getUUID(), poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
+                LOGGER.info("Join: seeded mob {} pool {} from inventory ({} items) -> pool={}", mob.getUUID(), poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
             } else {
                 // No inventory ammo -> clear pool and set magazine to 0 to avoid free reloads
                 if (currentPool > 0) {
                     MobAmmoHelper.consumeAmmo(mob, poolId, currentPool);
-                    LOG.info("Join: cleared pool {} for mob {} (no inventory ammo)", poolId, mob.getUUID());
+                    LOGGER.info("Join: cleared pool {} for mob {} (no inventory ammo)", poolId, mob.getUUID());
                 } else {
-                    LOG.debug("Join: no inventory ammo and pool already empty for mob {}", mob.getUUID());
+                    LOGGER.debug("Join: no inventory ammo and pool already empty for mob {}", mob.getUUID());
                 }
                 mob.addTag(SEEDED_TAG);
             }
         } else {
-            LOG.debug("Join: mob {} already seeded, skipping seeding", mob.getUUID());
+            LOGGER.debug("Join: mob {} already seeded, skipping seeding", mob.getUUID());
         }
 
         // attach GunSyncGoal (pass a minimal GunConfig if needed)
@@ -194,13 +194,13 @@ public final class MobAiInjector {
                                                 MobAmmoHelper.addAmmo(mob, poolId, inventoryAmmo);
                                             }
                                             mob.addTag(SEEDED_TAG);
-                                            LOG.info("Reapply: seeded mob {} pool {} from inventory ({} items) -> pool={}", id, poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
+                                            LOGGER.info("Reapply: seeded mob {} pool {} from inventory ({} items) -> pool={}", id, poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
                                         } else {
                                             if (currentPool2 > 0) {
                                                 MobAmmoHelper.consumeAmmo(mob, poolId, currentPool2);
-                                                LOG.info("Reapply: cleared pool {} for mob {} (no inventory ammo)", poolId, id);
+                                                LOGGER.info("Reapply: cleared pool {} for mob {} (no inventory ammo)", poolId, id);
                                             } else {
-                                                LOG.debug("Reapply: no inventory ammo and pool already empty for mob {}", id);
+                                                LOGGER.debug("Reapply: no inventory ammo and pool already empty for mob {}", id);
                                             }
                                             mob.addTag(SEEDED_TAG);
                                         }
@@ -211,7 +211,7 @@ public final class MobAiInjector {
                         }
                     }
                 } catch (Throwable t) {
-                    LOG.error("Error during pending reapply for {}", id, t);
+                    LOGGER.error("Error during pending reapply for {}", id, t);
                 } finally {
                     pendingReapply.remove(id);
                 }
@@ -285,10 +285,10 @@ public final class MobAiInjector {
                         CompoundTag tag = main.getOrCreateTag();
                         tag.putInt("AmmoCount", prevAmmo + totalConsumed);
                         curAmmo = prevAmmo + totalConsumed;
-                        LOG.info("Watcher: mob {} attempted to increase mag by {} but only consumed {} (inv {} + pool {}), mag now {}",
+                        LOGGER.info("Watcher: mob {} attempted to increase mag by {} but only consumed {} (inv {} + pool {}), mag now {}",
                                 id, delta, totalConsumed, consumedFromInv, consumedFromPool, curAmmo);
                     } else {
-                        LOG.info("Watcher: mob {} external reload consumed {} (inv {} + pool {}), pool left {}",
+                        LOGGER.info("Watcher: mob {} external reload consumed {} (inv {} + pool {}), pool left {}",
                                 id, totalConsumed, consumedFromInv, consumedFromPool, MobAmmoHelper.getAmmoPool(mob, poolId));
                     }
                 }
@@ -300,13 +300,13 @@ public final class MobAiInjector {
                         if (consumedInv > 0) {
                             main.getOrCreateTag().putInt("AmmoCount", maxAmmo);
                             curAmmo = maxAmmo;
-                            LOG.info("Watcher: mob {} SINGLE_ITEM reload consumed 1 from inventory -> mag {}", id, curAmmo);
+                            LOGGER.info("Watcher: mob {} SINGLE_ITEM reload consumed 1 from inventory -> mag {}", id, curAmmo);
                         } else {
                             int consumedPool = MobAmmoHelper.consumeAmmo(mob, poolId, 1);
                             if (consumedPool > 0) {
                                 main.getOrCreateTag().putInt("AmmoCount", maxAmmo);
                                 curAmmo = maxAmmo;
-                                LOG.info("Watcher: mob {} SINGLE_ITEM reload consumed 1 from pool -> mag {}, pool left {}",
+                                LOGGER.info("Watcher: mob {} SINGLE_ITEM reload consumed 1 from pool -> mag {}, pool left {}",
                                         id, curAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
                             }
                         }
@@ -318,12 +318,12 @@ public final class MobAiInjector {
                             int consumedPool = MobAmmoHelper.consumeAmmo(mob, poolId, needed - consumedInv);
                             afterInv += consumedPool;
                             if (consumedPool > 0)
-                                LOG.info("Watcher: mob {} MAG reload consumed pool {} (pool left {})", id, consumedPool, MobAmmoHelper.getAmmoPool(mob, poolId));
+                                LOGGER.info("Watcher: mob {} MAG reload consumed pool {} (pool left {})", id, consumedPool, MobAmmoHelper.getAmmoPool(mob, poolId));
                         }
                         if (afterInv > curAmmo) {
                             main.getOrCreateTag().putInt("AmmoCount", afterInv);
                             curAmmo = afterInv;
-                            LOG.info("Watcher: mob {} MAG reload consumed {} from inventory -> mag now {}", id, consumedInv, curAmmo);
+                            LOGGER.info("Watcher: mob {} MAG reload consumed {} from inventory -> mag now {}", id, consumedInv, curAmmo);
                         }
                     }
                 }
@@ -388,38 +388,38 @@ public final class MobAiInjector {
                                             MobAmmoHelper.addAmmo(mob, poolId, inventoryAmmo);
                                         }
                                         mob.addTag(SEEDED_TAG);
-                                        LOG.info("Scanner: seeded mob {} pool {} from inventory ({} items) -> pool={}", id, poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
+                                        LOGGER.info("Scanner: seeded mob {} pool {} from inventory ({} items) -> pool={}", id, poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
                                     } else {
-                                        LOG.info("Scanner: no exact-match ammo '{}' in inventory for mob {} — dumping contents", poolId, id);
+                                        LOGGER.info("Scanner: no exact-match ammo '{}' in inventory for mob {} — dumping contents", poolId, id);
                                         dumpInventoryContents(mob);
 
                                         int fuzzy = countAmmoInInventoryFuzzy(mob, poolId);
                                         if (fuzzy > 0) {
-                                            LOG.info("Scanner: fuzzy-match would have found {} items for pool {} on mob {} but deterministic seeding does not use fuzzy", fuzzy, poolId, id);
+                                            LOGGER.info("Scanner: fuzzy-match would have found {} items for pool {} on mob {} but deterministic seeding does not use fuzzy", fuzzy, poolId, id);
                                         }
 
                                         if (currentPool > 0) {
                                             MobAmmoHelper.consumeAmmo(mob, poolId, currentPool);
-                                            LOG.info("Scanner: cleared pool {} for mob {} (no inventory ammo)", poolId, id);
+                                            LOGGER.info("Scanner: cleared pool {} for mob {} (no inventory ammo)", poolId, id);
                                         } else {
-                                            LOG.debug("Scanner: no inventory ammo and pool already empty for mob {}", id);
+                                            LOGGER.debug("Scanner: no inventory ammo and pool already empty for mob {}", id);
                                         }
                                         mob.addTag(SEEDED_TAG);
                                     }
                                 } else {
-                                    LOG.debug("Scanner: mob {} already seeded, skipping", id);
+                                    LOGGER.debug("Scanner: mob {} already seeded, skipping", id);
                                 }
 
                                 mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
                                 watchedLevels.put(id, level);
                                 lastAmmoCounts.put(id, getAmmoCountFromStack(main));
-                                LOG.debug("Scanner: started watching mob {} holding {}", id, itemKey);
+                                LOGGER.debug("Scanner: started watching mob {} holding {}", id, itemKey);
                             }
                         }
                     }
                 }
             } catch (Throwable t) {
-                LOG.error("Error during mob scanner", t);
+                LOGGER.error("Error during mob scanner", t);
             }
         }
     }
@@ -509,7 +509,7 @@ public final class MobAiInjector {
             if (poolId == null) return Optional.empty();
             return Optional.of(new DetectedGun(poolId, Math.max(0, maxAmmo), kind));
         } catch (Throwable t) {
-            LOG.debug("detectJegGunData failed", t);
+            LOGGER.debug("detectJegGunData failed", t);
             return Optional.empty();
         }
     }
@@ -528,7 +528,7 @@ public final class MobAiInjector {
                         ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
                         sb.append("\n  slot ").append(i).append(": ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
                     }
-                    LOG.info(sb.toString());
+                    LOGGER.info(sb.toString());
                     return;
                 } else {
                     try {
@@ -543,7 +543,7 @@ public final class MobAiInjector {
                                 ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
                                 sb.append("\n  inv[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
                             }
-                            LOG.info(sb.toString());
+                            LOGGER.info(sb.toString());
                             return;
                         }
                     } catch (NoSuchFieldException | IllegalAccessException ignored) {}
@@ -566,7 +566,7 @@ public final class MobAiInjector {
                                 ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
                                 sb.append("\n  inventory[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
                             }
-                            LOG.info(sb.toString());
+                            LOGGER.info(sb.toString());
                             return;
                         }
                     } catch (NoSuchFieldException | IllegalAccessException ignored) {}
@@ -582,12 +582,12 @@ public final class MobAiInjector {
                         ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
                         sbb.append("\n  capability.slot[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
                     }
-                    LOG.info(sbb.toString());
+                    LOGGER.info(sbb.toString());
                 });
             } catch (Throwable ignored) {}
-            LOG.info(sb.append("\n  (no accessible inventory found)").toString());
+            LOGGER.info(sb.append("\n  (no accessible inventory found)").toString());
         } catch (Throwable t) {
-            LOG.warn("Failed to dump inventory for entity {}", entity.getUUID(), t);
+            LOGGER.warn("Failed to dump inventory for entity {}", entity.getUUID(), t);
         }
     }
 
@@ -720,7 +720,7 @@ public final class MobAiInjector {
                 }
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
-            LOG.debug("countAmmoInInventoryFuzzy reflection failed", t);
+            LOGGER.debug("countAmmoInInventoryFuzzy reflection failed", t);
         }
         return total;
     }
@@ -843,7 +843,7 @@ public final class MobAiInjector {
                 }
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
-            LOG.debug("countAmmoInInventory reflection failed", t);
+            LOGGER.debug("countAmmoInInventory reflection failed", t);
         }
         return 0;
     }
@@ -1016,7 +1016,7 @@ public final class MobAiInjector {
                 }
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
-            LOG.debug("removeAmmoFromInventory reflection failed", t);
+            LOGGER.debug("removeAmmoFromInventory reflection failed", t);
         }
 
         return removedTotal;
@@ -1054,16 +1054,16 @@ public final class MobAiInjector {
             File cfgDir = FMLPaths.CONFIGDIR.get().toFile();
             File modDir = new File(cfgDir, SUBPATH);
             if (!modDir.exists() && !modDir.mkdirs()) {
-                LOG.warn("ScannerConfigManager: failed to create config dir " + modDir.getAbsolutePath());
+                LOGGER.warn("ScannerConfigManager: failed to create config dir " + modDir.getAbsolutePath());
             }
             File cfgFile = new File(modDir, FILE_NAME);
             if (!cfgFile.exists()) {
                 this.config = new ScannerConfig();
                 try (Writer w = new OutputStreamWriter(new FileOutputStream(cfgFile), StandardCharsets.UTF_8)) {
                     GSON.toJson(this.config, w);
-                    LOG.info("ScannerConfigManager: wrote default scanner config to {}", cfgFile.getAbsolutePath());
+                    LOGGER.info("ScannerConfigManager: wrote default scanner config to {}", cfgFile.getAbsolutePath());
                 } catch (IOException ex) {
-                    LOG.error("ScannerConfigManager: failed to write default config", ex);
+                    LOGGER.error("ScannerConfigManager: failed to write default config", ex);
                 }
                 return;
             }
@@ -1076,9 +1076,9 @@ public final class MobAiInjector {
                 } else {
                     this.config = read;
                 }
-                LOG.info("ScannerConfigManager: loaded scanner config (intervalTicks={}, radius={})", this.config.intervalTicks, this.config.radius);
+                LOGGER.info("ScannerConfigManager: loaded scanner config (intervalTicks={}, radius={})", this.config.intervalTicks, this.config.radius);
             } catch (IOException ex) {
-                LOG.error("ScannerConfigManager: failed to read config, using defaults", ex);
+                LOGGER.error("ScannerConfigManager: failed to read config, using defaults", ex);
                 this.config = new ScannerConfig();
             }
         }

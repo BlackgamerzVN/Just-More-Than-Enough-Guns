@@ -12,11 +12,15 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
 import net.minecraft.resources.ResourceLocation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.*;
 
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE, modid = Main.MOD_ID)
 public final class MobAiInjectorReflection {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(MobAiInjectorReflection.class);
 
     private static ResourceLocation rl(String ns, String path) {
         ResourceLocation parsed = ResourceLocation.tryParse(ns + ":" + path);
@@ -149,7 +153,7 @@ public final class MobAiInjectorReflection {
             }
         } catch (InvocationTargetException | NoSuchMethodException | InstantiationException | IllegalAccessException | LinkageError e) {
             // Reflection failed; log for debugging
-            e.printStackTrace();
+            LOGGER.warn("Failed to inject ranged gunner goal for {}", mob, e);
         }
     }
 }

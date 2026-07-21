@@ -1,6 +1,6 @@
-package com.blackgamerz.jmteg.jegcompat.jegCompatCore;
+package com.blackgamerz.jmteg.jegcompat.core;
 
-import com.blackgamerz.jmteg.jegcompat.jegCompatCore.MobAmmoHelper;
+import com.blackgamerz.jmteg.jegcompat.core.MobAmmoHelper;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
