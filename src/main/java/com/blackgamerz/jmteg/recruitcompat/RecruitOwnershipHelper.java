@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.world.entity.PathfinderMob;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -184,22 +185,11 @@ public final class RecruitOwnershipHelper {
 
     /**
      * Attempts to find a no-arg method by name in the entity's class hierarchy.
-     * Returns {@code null} (never throws) if not found.
+     * Returns {@code null} (never throws) if not found. Delegates to the
+     * centralized, memoized {@link ReflectionCache#findMethod} instead of
+     * re-implementing the same public/declared-method hierarchy walk locally.
      */
     private static Method findMethod(Object obj, String name) {
-        try {
-            return obj.getClass().getMethod(name);
-        } catch (NoSuchMethodException ignored) {}
-        // Walk declared methods as fallback (handles package-private / protected)
-        Class<?> clazz = obj.getClass();
-        while (clazz != null && clazz != Object.class) {
-            try {
-                Method m = clazz.getDeclaredMethod(name);
-                m.setAccessible(true);
-                return m;
-            } catch (NoSuchMethodException ignored) {}
-            clazz = clazz.getSuperclass();
-        }
-        return null;
+        return ReflectionCache.findMethod(obj.getClass(), name);
     }
 }

@@ -247,8 +247,9 @@ public class RecruitAmmoResupplyGoal extends Goal {
             Object allyInv = ReflectionCache.tryGetInventoryObject(ally);
             if (allyInv == null) return false;
 
-            Method getSize = allyInv.getClass().getMethod("getContainerSize");
-            Method getItem = allyInv.getClass().getMethod("getItem", int.class);
+            Method getSize = ReflectionCache.findMethod(allyInv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+            Method getItem = ReflectionCache.findMethod(allyInv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+            if (getSize == null || getItem == null) return false;
 
             int size    = (int) getSize.invoke(allyInv);
             int maxAmmo = AmmoConsumptionHandler.getMaxAmmo(gunStack);
@@ -345,8 +346,9 @@ public class RecruitAmmoResupplyGoal extends Goal {
             Object inv = ReflectionCache.tryGetInventoryObject(mob);
             if (inv == null) return false;
 
-            Method getSize = inv.getClass().getMethod("getContainerSize");
-            Method getItem = inv.getClass().getMethod("getItem", int.class);
+            Method getSize = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+            Method getItem = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+            if (getSize == null || getItem == null) return false;
 
             int size = (int) getSize.invoke(inv);
             for (int i = 0; i < size; i++) {

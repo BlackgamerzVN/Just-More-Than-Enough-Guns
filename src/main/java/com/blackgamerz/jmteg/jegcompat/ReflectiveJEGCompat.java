@@ -50,16 +50,8 @@ public class ReflectiveJEGCompat implements IJEGCompat {
     private final Method projectileIsGravityMethod;// Gun.Projectile.isGravity() → boolean
 
     public ReflectiveJEGCompat() {
-        // AIGunEvent.performGunAttack
-        Method performAttack = null;
-        try {
-            Class<?> aiGunEventClass = Class.forName("ttv.migami.jeg.entity.ai.AIGunEvent");
-            performAttack = aiGunEventClass.getDeclaredMethod("performGunAttack",
-                    Mob.class, LivingEntity.class, ItemStack.class,
-                    Class.forName("ttv.migami.jeg.common.Gun"),
-                    float.class, boolean.class);
-        } catch (Throwable ignored) {}
-        this.performGunAttackMethod = performAttack;
+        // AIGunEvent.performGunAttack — resolved once in ReflectionCache's static initializer
+        this.performGunAttackMethod = ReflectionCache.getJeg_aiGunEvent_performGunAttack();
 
         // Assign all remaining handles from ReflectionCache (populated in the same static block)
         this.ejectCasingMethod         = ReflectionCache.getJeg_gunEventBus_ejectCasing();

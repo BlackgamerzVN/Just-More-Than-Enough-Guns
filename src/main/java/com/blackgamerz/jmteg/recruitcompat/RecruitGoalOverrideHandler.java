@@ -1,6 +1,7 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.compat.EntityWeaponSanitizer;
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.blackgamerz.jmteg.util.DeferredTaskScheduler;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.PathfinderMob;
@@ -15,6 +16,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.lang.reflect.Method;
 
 /**
  * Manages fallback goal injection/restore for recruits holding JEG guns.
@@ -101,7 +103,8 @@ public final class RecruitGoalOverrideHandler {
         if (entries != null) {
             for (Object entry : entries) {
                 try {
-                    var getGoal = entry.getClass().getMethod("getGoal");
+                    Method getGoal = ReflectionCache.findMethod(entry.getClass(), "getGoal");
+                    if (getGoal == null) continue;
                     Object goal = getGoal.invoke(entry);
                     if (goal != null) {
                         String name = goal.getClass().getName();
@@ -141,7 +144,8 @@ public final class RecruitGoalOverrideHandler {
         if (entries != null) {
             for (Object entry : entries) {
                 try {
-                    var getGoal = entry.getClass().getMethod("getGoal");
+                    Method getGoal = ReflectionCache.findMethod(entry.getClass(), "getGoal");
+                    if (getGoal == null) continue;
                     Object goal = getGoal.invoke(entry);
                     if (goal != null && goal.getClass().getName().equals(RecruitRangedGunnerAttackGoal.class.getName())) {
                         hasAttackGoal = true;
@@ -195,14 +199,12 @@ public final class RecruitGoalOverrideHandler {
                             Goal goal = wrap.getGoal();
                             if (goal != null) {
                                 String name = goal.getClass().getName();
-                                if (name.equals("com.talhanation.recruits.entities.ai.compat.RecruitRangedMusketAttackGoal")
-                                        || name.equals("com.talhanation.recruits.entities.ai.RecruitRangedCrossbowAttackGoal")
-                                        ) {
+                                if (ReflectionCache.isRecruitRangedAttackGoalClassName(name)) {
                                     int prio = wrap.getPriority();
                                     stored.add(new RemovedGoal(goal, prio));
                                     mob.goalSelector.removeGoal(goal);
                                     LOGGER.info("Flagged & removed WrappedGoal {} from {}", name, mob);
-                                } else if (name.equals("ttv.migami.jeg.entity.ai.GunAttackGoal")) {
+                                } else if (name.equals(ReflectionCache.JEG_GUN_ATTACK_GOAL_CLASS_NAME)) {
                                     // Remove any JEG GunAttackGoal that was injected by MobAiInjectorReflection or
                                     // JEG's own entity-join handler before the 2-tick deferred task ran.
                                     // Do NOT store for restoration: RecruitRangedGunnerAttackGoal replaces it,

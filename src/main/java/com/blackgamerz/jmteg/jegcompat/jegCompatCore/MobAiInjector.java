@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.jegcompat.jegCompatCore;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
@@ -439,27 +440,30 @@ public final class MobAiInjector {
     // Reflection-based detection of JEG Gun properties (no compile-time dependency).
     private static Optional<DetectedGun> detectJegGunData(ItemStack stack) {
         try {
-            Class<?> gunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
+            Class<?> gunItemClass = ReflectionCache.getJegGunItemClass();
+            if (gunItemClass == null) return Optional.empty();
             Object itemObj = stack.getItem();
             if (!gunItemClass.isInstance(itemObj)) return Optional.empty();
 
-            Method getModifiedGun = gunItemClass.getMethod("getModifiedGun", ItemStack.class);
+            Method getModifiedGun = ReflectionCache.findMethod(gunItemClass, "getModifiedGun", ItemStack.class);
+            if (getModifiedGun == null) return Optional.empty();
             Object gunObj = getModifiedGun.invoke(itemObj, stack);
             if (gunObj == null) return Optional.empty();
 
-            Method getReloads = gunObj.getClass().getMethod("getReloads");
+            Method getReloads = ReflectionCache.findMethod(gunObj.getClass(), "getReloads");
+            if (getReloads == null) return Optional.empty();
             Object reloadsObj = getReloads.invoke(gunObj);
             if (reloadsObj == null) return Optional.empty();
 
-            Method getReloadType = reloadsObj.getClass().getMethod("getReloadType");
-            Object reloadTypeObj = getReloadType.invoke(reloadsObj);
+            Method getReloadType = ReflectionCache.findMethod(reloadsObj.getClass(), "getReloadType");
+            Object reloadTypeObj = getReloadType != null ? getReloadType.invoke(reloadsObj) : null;
             boolean isSingleItem = false;
             if (reloadTypeObj != null) {
-                try {
-                    Method nameMethod = reloadTypeObj.getClass().getMethod("name");
+                Method nameMethod = ReflectionCache.findMethod(reloadTypeObj.getClass(), "name");
+                if (nameMethod != null) {
                     String name = (String) nameMethod.invoke(reloadTypeObj);
                     isSingleItem = "SINGLE_ITEM".equals(name);
-                } catch (NoSuchMethodException ignored) {
+                } else {
                     isSingleItem = "SINGLE_ITEM".equals(reloadTypeObj.toString());
                 }
             }
@@ -469,8 +473,8 @@ public final class MobAiInjector {
             GunConfig.ReloadKind kind;
 
             if (isSingleItem) {
-                Method getReloadItem = reloadsObj.getClass().getMethod("getReloadItem");
-                Object reloadItemObj = getReloadItem.invoke(reloadsObj);
+                Method getReloadItem = ReflectionCache.findMethod(reloadsObj.getClass(), "getReloadItem");
+                Object reloadItemObj = getReloadItem != null ? getReloadItem.invoke(reloadsObj) : null;
                 if (reloadItemObj instanceof ResourceLocation rl) {
                     poolId = rl;
                 } else if (reloadItemObj != null) {
@@ -478,11 +482,11 @@ public final class MobAiInjector {
                 }
                 kind = GunConfig.ReloadKind.SINGLE_ITEM;
             } else {
-                Method getProjectile = gunObj.getClass().getMethod("getProjectile");
-                Object projectileObj = getProjectile.invoke(gunObj);
+                Method getProjectile = ReflectionCache.findMethod(gunObj.getClass(), "getProjectile");
+                Object projectileObj = getProjectile != null ? getProjectile.invoke(gunObj) : null;
                 if (projectileObj != null) {
-                    Method getItem = projectileObj.getClass().getMethod("getItem");
-                    Object itemIdObj = getItem.invoke(projectileObj);
+                    Method getItem = ReflectionCache.findMethod(projectileObj.getClass(), "getItem");
+                    Object itemIdObj = getItem != null ? getItem.invoke(projectileObj) : null;
                     if (itemIdObj instanceof ResourceLocation rl) {
                         poolId = rl;
                     } else if (itemIdObj != null) {
@@ -492,26 +496,18 @@ public final class MobAiInjector {
                 kind = GunConfig.ReloadKind.PROJECTILE_OR_MAG;
             }
 
-            try {
-                Method getMaxAmmo = reloadsObj.getClass().getMethod("getMaxAmmo");
+            Method getMaxAmmo = ReflectionCache.findMethod(reloadsObj.getClass(), "getMaxAmmo");
+            if (getMaxAmmo != null) {
                 Object maxAmmoObj = getMaxAmmo.invoke(reloadsObj);
                 if (maxAmmoObj instanceof Number n) {
                     maxAmmo = n.intValue();
                 } else if (maxAmmoObj != null) {
                     maxAmmo = Integer.parseInt(maxAmmoObj.toString());
                 }
-            } catch (NoSuchMethodException ex) {
-                try {
-                    Method gm = reloadsObj.getClass().getMethod("getMaxAmmo");
-                    Object v = gm.invoke(reloadsObj);
-                    if (v instanceof Number n) maxAmmo = n.intValue();
-                } catch (Throwable ignored) {}
             }
 
             if (poolId == null) return Optional.empty();
             return Optional.of(new DetectedGun(poolId, Math.max(0, maxAmmo), kind));
-        } catch (ClassNotFoundException cnf) {
-            return Optional.empty();
         } catch (Throwable t) {
             LOG.debug("detectJegGunData failed", t);
             return Optional.empty();
@@ -523,8 +519,7 @@ public final class MobAiInjector {
         try {
             StringBuilder sb = new StringBuilder();
             sb.append("Inventory dump for ").append(entity.getEncodeId()).append(" / ").append(entity.getUUID()).append(":");
-            Method getInventory = null;
-            try { getInventory = entity.getClass().getMethod("getInventory"); } catch (NoSuchMethodException ignored) {}
+            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
             if (getInventory != null) {
                 Object inv = getInventory.invoke(entity);
                 if (inv instanceof Container container) {
@@ -600,8 +595,7 @@ public final class MobAiInjector {
     private static int countAmmoInInventoryFuzzy(Entity entity, ResourceLocation poolId) {
         int total = 0;
         try {
-            Method getInventory = null;
-            try { getInventory = entity.getClass().getMethod("getInventory"); } catch (NoSuchMethodException ignored) {}
+            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
             String poolPath = poolId == null ? "" : poolId.getPath();
             String poolNs = poolId == null ? "" : poolId.getNamespace();
             if (getInventory != null) {
@@ -654,10 +648,10 @@ public final class MobAiInjector {
                 invField.setAccessible(true);
                 Object inv = invField.get(entity);
                 if (inv != null) {
-                    if ("com.talhanation.recruits.inventory.RecruitSimpleContainer".equals(inv.getClass().getName())) {
+                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
                         try {
-                            Method sizeM = inv.getClass().getMethod("getContainerSize");
-                            Method getItemM = inv.getClass().getMethod("getItem", int.class);
+                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
                             int size = (Integer) sizeM.invoke(inv);
                             for (int i = 6; i < size; i++) {
                                 Object stObj = getItemM.invoke(inv, i);
@@ -734,8 +728,7 @@ public final class MobAiInjector {
     public static int countAmmoInInventory(Entity entity, ResourceLocation ammoId) {
         try {
             // 1) try getInventory()
-            Method getInventory = null;
-            try { getInventory = entity.getClass().getMethod("getInventory"); } catch (NoSuchMethodException ignored) {}
+            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
             if (getInventory != null) {
                 Object inv = getInventory.invoke(entity);
                 if (inv instanceof Container container) {
@@ -751,10 +744,10 @@ public final class MobAiInjector {
                     return total;
                 }
                 // handle RecruitSimpleContainer specifically if it isn't a Container (defensive)
-                if (inv != null && "com.talhanation.recruits.inventory.RecruitSimpleContainer".equals(inv.getClass().getName())) {
+                if (inv != null && ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
                     try {
-                        Method sizeM = inv.getClass().getMethod("getContainerSize");
-                        Method getItemM = inv.getClass().getMethod("getItem", int.class);
+                        Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                        Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
                         int size = (Integer) sizeM.invoke(inv);
                         int total = 0;
                         for (int i = 6; i < size; i++) { // only general inventory
@@ -793,10 +786,10 @@ public final class MobAiInjector {
                 invField.setAccessible(true);
                 Object inv = invField.get(entity);
                 if (inv != null) {
-                    if ("com.talhanation.recruits.inventory.RecruitSimpleContainer".equals(inv.getClass().getName())) {
+                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
                         try {
-                            Method sizeM = inv.getClass().getMethod("getContainerSize");
-                            Method getItemM = inv.getClass().getMethod("getItem", int.class);
+                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
                             int size = (Integer) sizeM.invoke(inv);
                             int total = 0;
                             for (int i = 6; i < size; i++) {
@@ -860,10 +853,7 @@ public final class MobAiInjector {
         int removedTotal = 0;
         try {
             // 1) try getInventory()
-            Method getInventory = null;
-            try {
-                getInventory = entity.getClass().getMethod("getInventory");
-            } catch (NoSuchMethodException ignored) {}
+            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
 
             if (getInventory != null) {
                 Object inv = getInventory.invoke(entity);
@@ -884,11 +874,11 @@ public final class MobAiInjector {
                     return removedTotal;
                 }
                 // RecruitSimpleContainer specific
-                if (inv != null && "com.talhanation.recruits.inventory.RecruitSimpleContainer".equals(inv.getClass().getName())) {
+                if (inv != null && ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
                     try {
-                        Method sizeM = inv.getClass().getMethod("getContainerSize");
-                        Method getItemM = inv.getClass().getMethod("getItem", int.class);
-                        Method setItemM = inv.getClass().getMethod("setItem", int.class, ItemStack.class);
+                        Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                        Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+                        Method setItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_ITEM, int.class, ItemStack.class);
                         int size = (Integer) sizeM.invoke(inv);
                         for (int i = 6; i < size && amount > 0; i++) {
                             Object stObj = getItemM.invoke(inv, i);
@@ -903,7 +893,7 @@ public final class MobAiInjector {
                                 }
                             }
                         }
-                        try { Method setChanged = inv.getClass().getMethod("setChanged"); setChanged.invoke(inv); } catch (NoSuchMethodException ignored) {}
+                        try { Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED); if (setChanged != null) setChanged.invoke(inv); } catch (Throwable ignored) {}
                         return removedTotal;
                     } catch (Throwable ignored) {}
                 }
@@ -929,9 +919,9 @@ public final class MobAiInjector {
                             }
                         }
                         try {
-                            Method setChanged = inv.getClass().getMethod("setChanged");
-                            setChanged.invoke(inv);
-                        } catch (NoSuchMethodException ignored) {}
+                            Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
+                            if (setChanged != null) setChanged.invoke(inv);
+                        } catch (Throwable ignored) {}
                         return removedTotal;
                     }
                 } catch (NoSuchFieldException | IllegalAccessException ignored) {}
@@ -943,11 +933,11 @@ public final class MobAiInjector {
                 invField.setAccessible(true);
                 Object inv = invField.get(entity);
                 if (inv != null) {
-                    if ("com.talhanation.recruits.inventory.RecruitSimpleContainer".equals(inv.getClass().getName())) {
+                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
                         try {
-                            Method sizeM = inv.getClass().getMethod("getContainerSize");
-                            Method getItemM = inv.getClass().getMethod("getItem", int.class);
-                            Method setItemM = inv.getClass().getMethod("setItem", int.class, ItemStack.class);
+                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+                            Method setItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_ITEM, int.class, ItemStack.class);
                             int size = (Integer) sizeM.invoke(inv);
                             for (int i = 6; i < size && amount > 0; i++) {
                                 Object stObj = getItemM.invoke(inv, i);
@@ -962,7 +952,10 @@ public final class MobAiInjector {
                                     }
                                 }
                             }
-                            try { Method setChanged = inv.getClass().getMethod("setChanged"); setChanged.invoke(inv); } catch (NoSuchMethodException ignored) {}
+                            try {
+                                Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
+                                if (setChanged != null) setChanged.invoke(inv);
+                            } catch (Throwable ignored) {}
                             return removedTotal;
                         } catch (Throwable ignored) {}
                     }
@@ -988,9 +981,9 @@ public final class MobAiInjector {
                                 }
                             }
                             try {
-                                Method setChanged = inv.getClass().getMethod("setChanged");
-                                setChanged.invoke(inv);
-                            } catch (NoSuchMethodException ignored) {}
+                                Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
+                                if (setChanged != null) setChanged.invoke(inv);
+                            } catch (Throwable ignored) {}
                             return removedTotal;
                         }
                     } catch (NoSuchFieldException | IllegalAccessException ignored) {}

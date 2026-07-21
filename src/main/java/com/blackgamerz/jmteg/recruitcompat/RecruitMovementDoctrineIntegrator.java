@@ -1,6 +1,7 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
 import com.blackgamerz.jmteg.Main;
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -18,7 +19,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.WeakHashMap;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Server-side integrator that maps Recruits movement/command actions to JMTEG doctrines.
@@ -50,7 +50,6 @@ public final class RecruitMovementDoctrineIntegrator {
 
     // Internal caches
     private static final Map<PathfinderMob, Integer> lastKnownState = new WeakHashMap<>();
-    private static final Map<Class<?>, Method> methodCache = new ConcurrentHashMap<>();
 
     private static int tickCounter = 0;
 
@@ -135,7 +134,7 @@ public final class RecruitMovementDoctrineIntegrator {
 
     private static Boolean callIsEffectedByCommand(PathfinderMob mob, UUID playerUUID) {
         try {
-            Method m = findMethod(mob.getClass(), "isEffectedByCommand", UUID.class);
+            Method m = ReflectionCache.findMethod(mob.getClass(), ReflectionCache.RECRUIT_METHOD_IS_EFFECTED_BY_COMMAND, UUID.class);
             if (m == null) return null;
             Object res = m.invoke(mob, playerUUID);
             if (res instanceof Boolean b) return b;
@@ -145,7 +144,7 @@ public final class RecruitMovementDoctrineIntegrator {
 
     private static Integer callGetFollowState(PathfinderMob mob) {
         try {
-            Method m = findMethod(mob.getClass(), "getFollowState");
+            Method m = ReflectionCache.findMethod(mob.getClass(), ReflectionCache.RECRUIT_METHOD_GET_FOLLOW_STATE);
             if (m == null) return null;
             Object res = m.invoke(mob);
             if (res instanceof Integer i) return i;
@@ -155,7 +154,7 @@ public final class RecruitMovementDoctrineIntegrator {
 
     private static Boolean callGetIsInOrder(PathfinderMob mob) {
         try {
-            Method m = findMethod(mob.getClass(), "getIsInOrder");
+            Method m = ReflectionCache.findMethod(mob.getClass(), ReflectionCache.RECRUIT_METHOD_GET_IS_IN_ORDER);
             if (m == null) return null;
             Object res = m.invoke(mob);
             if (res instanceof Boolean b) return b;
@@ -170,24 +169,6 @@ public final class RecruitMovementDoctrineIntegrator {
             return tag.getString(RecruitDoctrine.NBT_KEY);
         } catch (Throwable ignored) {}
         return null;
-    }
-
-    private static Method findMethod(Class<?> cls, String name, Class<?>... params) {
-        try {
-            Class<?> key = cls;
-            Method cached = methodCache.get(key);
-            if (cached != null && cached.getName().equals(name)) return cached;
-
-            Method m = cls.getMethod(name, params);
-            m.setAccessible(true);
-            methodCache.put(key, m);
-            return m;
-        } catch (Throwable t) {
-            // walk up class hierarchy searching for the method
-            Class<?> sup = cls.getSuperclass();
-            if (sup != null && sup != Object.class) return findMethod(sup, name, params);
-            return null;
-        }
     }
 
     // ----------------- Mapping -----------------

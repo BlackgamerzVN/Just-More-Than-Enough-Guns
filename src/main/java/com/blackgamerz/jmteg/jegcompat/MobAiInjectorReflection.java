@@ -1,6 +1,7 @@
 package com.blackgamerz.jmteg.jegcompat;
 
 import com.blackgamerz.jmteg.Main;
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -36,14 +37,18 @@ public final class MobAiInjectorReflection {
         if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
 
         try {
-            // Try to load JEG classes. If any are missing, Class.forName will throw and we abort.
-            Class<?> jegGunItemClass = Class.forName("ttv.migami.jeg.item.GunItem");
-            Class<?> jegGunClass = Class.forName("ttv.migami.jeg.common.Gun");
-            Class<?> jegReloadsClass = Class.forName("ttv.migami.jeg.common.Reloads"); // adjust name if different; or get via method return
-            Class<?> jegReloadTypeClass = Class.forName("ttv.migami.jeg.common.ReloadType");
-            Class<?> jegMobAmmoHelperClass = Class.forName("ttv.migami.jeg.common.MobAmmoHelper");
-            Class<?> jegGunAttackGoalClass = Class.forName("ttv.migami.jeg.entity.ai.GunAttackGoal");
-            Class<?> jegAITypeClass = Class.forName("ttv.migami.jeg.entity.ai.AIType");
+            // Resolve JEG classes via the centralized, cached ReflectionCache instead of
+            // repeating Class.forName lookups with hardcoded FQCNs on every entity join.
+            Class<?> jegGunItemClass = ReflectionCache.getJegGunItemClass();
+            Class<?> jegGunClass = ReflectionCache.getJegCommonGunClass();
+            Class<?> jegMobAmmoHelperClass = ReflectionCache.getJegMobAmmoHelperClass();
+            Class<?> jegGunAttackGoalClass = ReflectionCache.getJegGunAttackGoalClass();
+            Class<?> jegAITypeClass = ReflectionCache.getJegAiTypeClass();
+            if (jegGunItemClass == null || jegGunClass == null || jegMobAmmoHelperClass == null
+                    || jegGunAttackGoalClass == null || jegAITypeClass == null) {
+                // JEG not present or a required class/API is missing -> nothing to do.
+                return;
+            }
 
             // Check main hand item is instance of JEG's GunItem
             ItemStack main = mob.getMainHandItem();
@@ -54,26 +59,26 @@ public final class MobAiInjectorReflection {
             }
 
             // getModifiedGun(ItemStack) -> Gun
-            Method getModifiedGun = jegGunItemClass.getMethod("getModifiedGun", ItemStack.class);
+            Method getModifiedGun = ReflectionCache.findMethod(jegGunItemClass, "getModifiedGun", ItemStack.class);
+            if (getModifiedGun == null) return;
             Object gunObj = getModifiedGun.invoke(item, main);
             if (gunObj == null) return;
 
             // reloads = gun.getReloads()
-            Method getReloads = jegGunClass.getMethod("getReloads");
+            Method getReloads = ReflectionCache.findMethod(jegGunClass, "getReloads");
+            if (getReloads == null) return;
             Object reloadsObj = getReloads.invoke(gunObj);
 
             // reloadType = reloads.getReloadType()
-            Method getReloadType = reloadsObj.getClass().getMethod("getReloadType");
-            Object reloadType = getReloadType.invoke(reloadsObj);
+            Method getReloadType = ReflectionCache.findMethod(reloadsObj.getClass(), "getReloadType");
+            Object reloadType = getReloadType != null ? getReloadType.invoke(reloadsObj) : null;
 
             // maxAmmo = reloads.getMaxAmmo()
             int maxAmmo = 0;
-            try {
-                Method getMaxAmmo = reloadsObj.getClass().getMethod("getMaxAmmo");
+            Method getMaxAmmo = ReflectionCache.findMethod(reloadsObj.getClass(), "getMaxAmmo");
+            if (getMaxAmmo != null) {
                 Object maxAmmoObj = getMaxAmmo.invoke(reloadsObj);
                 if (maxAmmoObj instanceof Number) maxAmmo = ((Number) maxAmmoObj).intValue();
-            } catch (NoSuchMethodException ex) {
-                // try alternative method name if needed or bail
             }
 
             // Determine poolId ResourceLocation:
@@ -105,13 +110,15 @@ public final class MobAiInjectorReflection {
 
             // Seed mob pool if empty
             if (poolId != null) {
-                Method getAmmoPool = jegMobAmmoHelperClass.getMethod("getAmmoPool", LivingEntity.class, ResourceLocation.class);
-                Object poolVal = getAmmoPool.invoke(null, mob, poolId);
-                int pool = (poolVal instanceof Number) ? ((Number) poolVal).intValue() : 0;
-                if (pool == 0) {
-                    int seedPool = mob.getRandom().nextInt(Math.max(1, Math.max(1, maxAmmo * 2)));
-                    Method addAmmo = jegMobAmmoHelperClass.getMethod("addAmmo", LivingEntity.class, ResourceLocation.class, int.class);
-                    addAmmo.invoke(null, mob, poolId, seedPool);
+                Method getAmmoPool = ReflectionCache.findMethod(jegMobAmmoHelperClass, "getAmmoPool", LivingEntity.class, ResourceLocation.class);
+                if (getAmmoPool != null) {
+                    Object poolVal = getAmmoPool.invoke(null, mob, poolId);
+                    int pool = (poolVal instanceof Number) ? ((Number) poolVal).intValue() : 0;
+                    if (pool == 0) {
+                        int seedPool = mob.getRandom().nextInt(Math.max(1, Math.max(1, maxAmmo * 2)));
+                        Method addAmmo = ReflectionCache.findMethod(jegMobAmmoHelperClass, "addAmmo", LivingEntity.class, ResourceLocation.class, int.class);
+                        if (addAmmo != null) addAmmo.invoke(null, mob, poolId, seedPool);
+                    }
                 }
             }
 
@@ -140,8 +147,6 @@ public final class MobAiInjectorReflection {
                 Method addGoalMethod = mob.goalSelector.getClass().getMethod("addGoal", int.class, Goal.class);
                 addGoalMethod.invoke(mob.goalSelector, 0, goalInstance);
             }
-        } catch (ClassNotFoundException e) {
-            // JEG not present -> nothing to do
         } catch (InvocationTargetException | NoSuchMethodException | InstantiationException | IllegalAccessException | LinkageError e) {
             // Reflection failed; log for debugging
             e.printStackTrace();

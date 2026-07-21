@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
@@ -284,20 +285,10 @@ public final class RecruitDoctrineHolder {
     /**
      * Walks the class hierarchy of {@code obj} looking for a no-arg method with
      * the given name.  Returns {@code null} (never throws) when not found.
+     * Delegates to the centralized, memoized {@link ReflectionCache#findMethod}.
      */
     private static Method findMethod(Object obj, String name) {
-        try { return obj.getClass().getMethod(name); }
-        catch (NoSuchMethodException ignored) {}
-        Class<?> c = obj.getClass();
-        while (c != null && c != Object.class) {
-            try {
-                Method m = c.getDeclaredMethod(name);
-                m.setAccessible(true);
-                return m;
-            } catch (NoSuchMethodException ignored) {}
-            c = c.getSuperclass();
-        }
-        return null;
+        return ReflectionCache.findMethod(obj.getClass(), name);
     }
 
     /** One-line flavour description used in chat and command feedback messages. */
