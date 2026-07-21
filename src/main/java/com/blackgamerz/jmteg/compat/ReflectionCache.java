@@ -53,6 +53,7 @@ public final class ReflectionCache {
     public static final String RECRUIT_METHOD_IS_EFFECTED_BY_COMMAND = "isEffectedByCommand";
     public static final String RECRUIT_METHOD_GET_FOLLOW_STATE = "getFollowState";
     public static final String RECRUIT_METHOD_GET_IS_IN_ORDER = "getIsInOrder";
+    public static final String RECRUIT_METHOD_SHOULD_ATTACK = "shouldAttack";
     public static final String METHOD_GET_INVENTORY = "getInventory";
     public static final String METHOD_GET_CONTAINER_SIZE = "getContainerSize";
     public static final String METHOD_GET_ITEM = "getItem";
@@ -75,6 +76,10 @@ public final class ReflectionCache {
 
     // ── GunEventBus class ─────────────────────────────────────────────────────
     private static volatile Class<?> jegGunEventBusClass;
+
+    // ── Gun modifier/enchantment helper classes (attachment & enchant scaling) ─
+    private static volatile Class<?> jegGunModifierHelperClass;
+    private static volatile Class<?> jegGunEnchantmentHelperClass;
 
     // ── Additional soft-dependency classes (lazily resolved, cached) ──────────
     private static volatile Class<?> recruitEntityClass;
@@ -134,6 +139,14 @@ public final class ReflectionCache {
     /** static void performGunAttack(Mob, LivingEntity, ItemStack, Gun, float, boolean) */
     private static volatile Method jeg_aiGunEvent_performGunAttack;
 
+    // ── Gun modifier/enchantment helper static methods (attachment/enchant scaling) ─
+    /** static double GunEnchantmentHelper.getProjectileSpeedModifier(ItemStack) */
+    private static volatile Method jeg_enchantmentHelper_getProjectileSpeedModifier;
+    /** static double GunModifierHelper.getModifiedProjectileSpeed(ItemStack, double) */
+    private static volatile Method jeg_modifierHelper_getModifiedProjectileSpeed;
+    /** static double GunModifierHelper.getModifiedProjectileGravity(ItemStack, double) */
+    private static volatile Method jeg_modifierHelper_getModifiedProjectileGravity;
+
     static {
         // ── Load top-level classes ─────────────────────────────────────────
         try { jegGunItemClass    = Class.forName("ttv.migami.jeg.item.GunItem");   } catch (Throwable ignored) {}
@@ -146,6 +159,9 @@ public final class ReflectionCache {
         try { jegGunProjectileClass = Class.forName("ttv.migami.jeg.common.Gun$Projectile"); } catch (Throwable ignored) {}
 
         try { jegGunEventBusClass  = Class.forName("ttv.migami.jeg.event.GunEventBus");   } catch (Throwable ignored) {}
+
+        try { jegGunModifierHelperClass     = Class.forName("ttv.migami.jeg.util.GunModifierHelper");     } catch (Throwable ignored) {}
+        try { jegGunEnchantmentHelperClass  = Class.forName("ttv.migami.jeg.util.GunEnchantmentHelper");  } catch (Throwable ignored) {}
 
         // ── GunItem methods ────────────────────────────────────────────────
         if (jegGunItemClass != null) {
@@ -204,6 +220,28 @@ public final class ReflectionCache {
             } catch (Throwable ignored) {}
         }
 
+        // ── Gun modifier/enchantment helper static methods ─────────────────
+        // These mirror JEG's real fire-time math (AIGunEvent.performGunAttack /
+        // ProjectileEntity constructor) so ReflectiveJEGCompat's aim inputs account
+        // for enchantment (e.g. Accelerator) and attachment speed/gravity modifiers
+        // instead of only the raw base Gun.Projectile values.
+        if (jegGunEnchantmentHelperClass != null) {
+            try {
+                jeg_enchantmentHelper_getProjectileSpeedModifier =
+                        jegGunEnchantmentHelperClass.getMethod("getProjectileSpeedModifier", ItemStack.class);
+            } catch (Throwable ignored) {}
+        }
+        if (jegGunModifierHelperClass != null) {
+            try {
+                jeg_modifierHelper_getModifiedProjectileSpeed =
+                        jegGunModifierHelperClass.getMethod("getModifiedProjectileSpeed", ItemStack.class, double.class);
+            } catch (Throwable ignored) {}
+            try {
+                jeg_modifierHelper_getModifiedProjectileGravity =
+                        jegGunModifierHelperClass.getMethod("getModifiedProjectileGravity", ItemStack.class, double.class);
+            } catch (Throwable ignored) {}
+        }
+
         // Individual class/method probes above are intentionally silent (JEG is a soft
         // dependency and most probes are expected to miss when it isn't installed); log a
         // single debug-level summary here instead of noise per probe.
@@ -235,6 +273,10 @@ public final class ReflectionCache {
     public static Method getJeg_projectile_getSpeed()      { return jeg_projectile_getSpeed; }
     public static Method getJeg_projectile_isGravity()     { return jeg_projectile_isGravity; }
     public static Method getJeg_gunEventBus_ejectCasing()  { return jeg_gunEventBus_ejectCasing; }
+
+    public static Method getJeg_enchantmentHelper_getProjectileSpeedModifier() { return jeg_enchantmentHelper_getProjectileSpeedModifier; }
+    public static Method getJeg_modifierHelper_getModifiedProjectileSpeed()    { return jeg_modifierHelper_getModifiedProjectileSpeed; }
+    public static Method getJeg_modifierHelper_getModifiedProjectileGravity() { return jeg_modifierHelper_getModifiedProjectileGravity; }
 
     // ── Lazily-resolved soft-dependency classes (resolved once, then cached) ──
 

@@ -1,9 +1,13 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+import java.lang.reflect.Method;
 import java.util.List;
 
 /**
@@ -24,6 +28,8 @@ final class RecruitTargetScorer {
 
     private RecruitTargetScorer() {
     }
+
+    private static final Logger LOGGER = LogManager.getLogger("JMT-RecruitTargetScorer");
 
     /** Minimum entity-scan radius (blocks) used by {@link #pickBestRoleAwareTarget}. */
     private static final double MIN_TARGET_SEARCH_RADIUS = 24.0;
@@ -66,7 +72,7 @@ final class RecruitTargetScorer {
         List<LivingEntity> candidates = mob.level().getEntitiesOfClass(
                 LivingEntity.class,
                 mob.getBoundingBox().inflate(searchRadius),
-                e -> e != mob && e.isAlive() && !mob.isAlliedTo(e) && mob.canAttack(e));
+                e -> e != mob && e.isAlive() && !mob.isAlliedTo(e) && mob.canAttack(e) && shouldAttack(mob, e));
 
         if (candidates.isEmpty()) {
             return null;
@@ -163,7 +169,7 @@ final class RecruitTargetScorer {
                 LivingEntity.class,
                 center.getBoundingBox().inflate(radius),
                 e -> e != mob && e != center && e.isAlive()
-                        && !mob.isAlliedTo(e) && mob.canAttack(e)
+                        && !mob.isAlliedTo(e) && mob.canAttack(e) && shouldAttack(mob, e)
         ).size();
     }
 
@@ -176,5 +182,30 @@ final class RecruitTargetScorer {
         LivingEntity enemyTarget = enemyMob.getTarget();
         if (enemyTarget == null) return 0.0;
         return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
+    }
+
+    /**
+     * Respects the recruit's player-controlled stance (Neutral/Aggressive/Raid/Passive)
+     * by reflectively invoking Recruits' {@code shouldAttack(LivingEntity)} — a
+     * Recruits-custom method (not part of vanilla {@code Mob}/{@code PathfinderMob}) that
+     * layers stance gating on top of {@link PathfinderMob#canAttack}. Without this check,
+     * a recruit set to Passive stance could still be forced into combat by this role-aware
+     * target override, which only ever consulted the lower-level faction/hostility checks.
+     *
+     * <p>Falls back to {@code true} (i.e. defers entirely to the {@code canAttack}/
+     * {@code isAlliedTo} filter already applied by the caller) when {@code mob} isn't a
+     * Recruits entity or the reflective method can't be resolved — consistent with this
+     * codebase's soft-dependency "never throw, always degrade gracefully" philosophy.</p>
+     */
+    private static boolean shouldAttack(PathfinderMob mob, LivingEntity target) {
+        try {
+            Method m = ReflectionCache.findMethod(mob.getClass(), ReflectionCache.RECRUIT_METHOD_SHOULD_ATTACK, LivingEntity.class);
+            if (m == null) return true;
+            Object result = m.invoke(mob, target);
+            return !(result instanceof Boolean b) || b;
+        } catch (Throwable t) {
+            LOGGER.debug("shouldAttack: reflective invoke failed for {}", mob.getClass(), t);
+            return true;
+        }
     }
 }
