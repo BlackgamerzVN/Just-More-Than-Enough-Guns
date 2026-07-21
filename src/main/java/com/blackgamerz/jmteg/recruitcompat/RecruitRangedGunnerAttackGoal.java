@@ -6,7 +6,6 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -16,7 +15,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.EnumSet;
-import java.util.List;
 
 /**
  * Movement/aim/fire/reload goal for recruits holding JEG guns.
@@ -99,8 +97,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // (ballistic defaults are now provided by ReflectiveJEGCompat / StubJEGCompat via JEGCompatManager)
 
     // Downward bias (degrees) to reduce overshooting; increase to aim lower
-    private static final float AIM_DOWN_BIAS_DEGREES = 200.0f;
-    private static final float AIM_DOWN_BIAS_DEGREES_SQR = AIM_DOWN_BIAS_DEGREES * AIM_DOWN_BIAS_DEGREES;
+    // Downward bias (degrees) to reduce overshooting is now applied inside RecruitAimSolver.
 
     // ADS-like spread multiplier: while AIMing the gun's stored spread will be multiplied by this.
     // 1.0 = no change, 0.5 = half spread (more accurate). Tweak to your taste.
@@ -128,35 +125,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
 
     // Role-aware target-selection tuning ──────────────────────────────────────
     // These constants control the scoring formulae for each role.  Adjust to taste.
-
-    /** Minimum entity-scan radius (blocks) used by pickBestRoleAwareTarget(). */
-    private static final double MIN_TARGET_SEARCH_RADIUS = 24.0;
-
-    // SIDEARM: inverse-square distance scoring
-    /** Numerator for the SIDEARM inverse-square distance score (higher = prefer closer more). */
-    private static final double SIDEARM_SCORE_MULTIPLIER = 4.0;
-    /** Offset added to distance before squaring, preventing division-by-zero at point-blank range. */
-    private static final double SIDEARM_DISTANCE_OFFSET  = 0.5;
-
-    // TACTICAL_RANGED: LOS + health + distance
-    /** Score bonus awarded when the recruit has a clear line of sight to the target. */
-    private static final double TACTICAL_LOS_BONUS       = 1.5;
-    /** Distance scale divisor in the TACTICAL_RANGED distance component (higher = more forgiving). */
-    private static final double TACTICAL_DISTANCE_SCALE  = 0.5;
-
-    // HEAVY: cluster-of-enemies scoring
-    /** Radius (blocks) around a candidate target used to count nearby enemies for HEAVY scoring. */
-    private static final double HEAVY_CLUSTER_RADIUS     = 6.0;
-    /** Score weight applied to each enemy found in the cluster radius. */
-    private static final double HEAVY_CLUSTER_WEIGHT     = 1.2;
-    /** Distance scale divisor in the HEAVY distance tiebreaker component. */
-    private static final double HEAVY_DISTANCE_SCALE     = 0.1;
-
-    // UTILITY: ally-threat scoring
-    /** Score multiplier applied to the threat bonus when an enemy is targeting a friendly. */
-    private static final double UTILITY_THREAT_WEIGHT    = 2.0;
-    /** Distance offset preventing division-by-zero in the UTILITY distance component. */
-    private static final double UTILITY_DISTANCE_OFFSET  = 0.1;
 
     // NBT keys used to stash original spread and mark applied state
     private static final String JMTEG_ADS_FLAG = "jmteg_ads";
@@ -346,15 +314,15 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
                 }
 
                 // Closer targets can snap faster; farther targets get slower, steadier aim.
-                float maxYawPerTick = (float) clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
-                float maxPitchPerTick = (float) clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
+                float maxYawPerTick = (float) RecruitAimSolver.clamp(15.0 + (1.0 - (dist / currentProfile.preferredRange)) * 60.0, 10.0, 120.0);
+                float maxPitchPerTick = (float) RecruitAimSolver.clamp(10.0 + (1.0 - (dist / currentProfile.preferredRange)) * 40.0, 8.0, 90.0);
 
                 // Extract projectile properties through the established JEG compat boundary.
                 float projectileSpeed = JEGCompatManager.INSTANCE.getProjectileSpeed(mob.getMainHandItem());
                 float projectileGravity = JEGCompatManager.INSTANCE.getProjectileGravity(mob.getMainHandItem());
 
                 // Aim accounting for target motion and gravity
-                applyAdvancedAim(mob, target, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
+                RecruitAimSolver.applyAdvancedAim(mob, target, projectileSpeed, projectileGravity, maxYawPerTick, maxPitchPerTick);
 
                 aimTimer--;
                 if (aimTimer <= 0) {
@@ -425,7 +393,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     // Additionally, the result is scaled up when the held gun is inappropriate for this recruit's tier,
     // and further scaled by the doctrine's ammoConservation factor (>1 = more careful, conserves ammo).
     private int computeAimTicks(double distance) {
-        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
+        double t = RecruitAimSolver.clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_AIM_TICKS, Math.round(MIN_AIM_TICKS + (MAX_AIM_TICKS - MIN_AIM_TICKS) * t));
         double weight   = getHeldGunWeight();
         double penalty  = 1.0 + (MAX_AIM_PENALTY_FACTOR - 1.0) * (1.0 - weight);
@@ -434,7 +402,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
     }
 
     private int computeCooldownTicks(double distance) {
-        double t = clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
+        double t = RecruitAimSolver.clamp(distance / currentProfile.preferredRange, 0.0, 1.0);
         int base = (int) Math.max(MIN_COOLDOWN_TICKS, Math.round(MIN_COOLDOWN_TICKS + (MAX_COOLDOWN_TICKS - MIN_COOLDOWN_TICKS) * t));
         double weight   = getHeldGunWeight();
         double penalty  = 1.0 + (MAX_COOLDOWN_PENALTY_FACTOR - 1.0) * (1.0 - weight);
@@ -480,7 +448,7 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
             // keep default minimum burst size
         }
 
-        int effectiveMinBurstShots = (int) clamp(minBurstShots, 1, MAX_BURST_COUNT);
+        int effectiveMinBurstShots = (int) RecruitAimSolver.clamp(minBurstShots, 1, MAX_BURST_COUNT);
         if (effectiveMinBurstShots >= MAX_BURST_COUNT) {
             return MAX_BURST_COUNT;
         }
@@ -499,10 +467,6 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         } catch (Throwable ignored) {
             return 20;
         }
-    }
-
-    private static double clamp(double v, double a, double b) {
-        return v < a ? a : (v > b ? b : v);
     }
 
     // ── Firing ────────────────────────────────────────────────────────────────
@@ -667,128 +631,8 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
         }
     }
 
-    /**
-     * Aim helper that:
-     * - predicts a lead point using an intercept solver (ignores gravity for time estimate)
-     * - computes elevation needed to hit that point given projectile speed and gravity
-     * - applies smooth rotation (yaw & pitch interpolation limited by maxDelta)
-     *
-     * Uses a stable ballistic formula and picks the lower-angle trajectory.
-     */
-    private static void applyAdvancedAim(PathfinderMob shooter, LivingEntity target, float projectileSpeed, float gravity, float maxYawChange, float maxPitchChange) {
-        Vec3 shooterEye = new Vec3(shooter.getX(), shooter.getEyeY(), shooter.getZ());
-        Vec3 targetEye = new Vec3(target.getX(), target.getEyeY(), target.getZ());
-        Vec3 targetVel = target.getDeltaMovement(); // blocks per tick
-
-        // Solve intercept time ignoring gravity to get rough time-of-flight
-        double t = solveInterceptTime(shooterEye, targetEye, targetVel, projectileSpeed);
-
-        Vec3 aimPoint;
-        if (t > 0) {
-            aimPoint = targetEye.add(targetVel.scale(t));
-        } else {
-            aimPoint = targetEye;
-        }
-
-        double dx = aimPoint.x - shooterEye.x;
-        double dz = aimPoint.z - shooterEye.z;
-        double dy = aimPoint.y - shooterEye.y;
-        double horiz = Math.sqrt(dx * dx + dz * dz);
-        if (horiz < 1e-6) horiz = 1e-6;
-
-        // Compute yaw (horizontal)
-        double targetYaw = Math.toDegrees(Math.atan2(dz, dx)) - 90.0;
-
-        // Compute pitch using standard ballistic formula, picking the lower arc (more direct shot)
-        double x = horiz;
-        double v = Math.max(1e-4, projectileSpeed);
-        double g = Math.abs(gravity); // use positive magnitude for formulas
-
-        double pitchDeg;
-        if (g < 1e-9) {
-            // no gravity -> aim directly
-            pitchDeg = -Math.toDegrees(Math.atan2(dy, x));
-        } else {
-            double v2 = v * v;
-            double inside = v2 * v2 - g * (g * x * x + 2.0 * dy * v2);
-            if (inside >= 0.0) {
-                double root = Math.sqrt(inside);
-                // two candidate angles:
-                double theta1 = Math.atan2(v2 - root, g * x);
-                double theta2 = Math.atan2(v2 + root, g * x);
-                // choose the smaller (lower) angle in absolute value -> lower trajectory
-                double theta = Math.min(theta1, theta2);
-                pitchDeg = -Math.toDegrees(theta); // negative = look up in Minecraft
-            } else {
-                // no ballistic solution (projectile too slow), fall back to direct aim
-                pitchDeg = -Math.toDegrees(Math.atan2(dy, x));
-            }
-        }
-
-        // Apply a small downward bias to counter systematic overshoot and clamp
-        pitchDeg += AIM_DOWN_BIAS_DEGREES_SQR;
-        if (pitchDeg > 90.0) pitchDeg = 90.0;
-        if (pitchDeg < -90.0) pitchDeg = -90.0;
-
-        float newYaw = rotLerp(shooter.getYRot(), (float) targetYaw, maxYawChange);
-        float newPitch = rotLerp(shooter.getXRot(), (float) pitchDeg, maxPitchChange);
-
-        shooter.setYRot(newYaw);
-        shooter.setXRot(newPitch);
-        // align body/head to avoid mismatch between head yaw and body yaw
-        shooter.yBodyRot = newYaw;
-        shooter.yHeadRot = newYaw;
-    }
-
-    /**
-     * Solve interception time (ignoring gravity) for projectile speed s:
-     * (v·v - s^2) t^2 + 2 r·v t + r·r = 0
-     * returns smallest positive t or -1 if no solution.
-     */
-    private static double solveInterceptTime(Vec3 shooter, Vec3 target, Vec3 targetVel, double s) {
-        Vec3 rVec = target.subtract(shooter);
-        double rx = rVec.x, ry = rVec.y, rz = rVec.z;
-        double vx = targetVel.x, vy = targetVel.y, vz = targetVel.z;
-
-        double a = vx * vx + vy * vy + vz * vz - s * s;
-        double b = 2.0 * (rx * vx + ry * vy + rz * vz);
-        double c = rx * rx + ry * ry + rz * rz;
-
-        if (Math.abs(a) < 1e-6) {
-            if (Math.abs(b) < 1e-6) {
-                return c <= 0.0 ? 0.0 : -1.0;
-            }
-            double t = -c / b;
-            return t > 0 ? t : -1.0;
-        }
-
-        double disc = b * b - 4.0 * a * c;
-        if (disc < 0.0) return -1.0;
-        double sqrtD = Math.sqrt(disc);
-        double t1 = (-b - sqrtD) / (2.0 * a);
-        double t2 = (-b + sqrtD) / (2.0 * a);
-
-        double t = Double.POSITIVE_INFINITY;
-        if (t1 > 0 && t1 < t) t = t1;
-        if (t2 > 0 && t2 < t) t = t2;
-        return t == Double.POSITIVE_INFINITY ? -1.0 : t;
-    }
-
-    // Interpolate angle 'from' towards 'to' with max delta (degrees), handles wrap-around
-    private static float rotLerp(float from, float to, float maxDelta) {
-        float delta = wrapDegrees(to - from);
-        if (delta > maxDelta) delta = maxDelta;
-        if (delta < -maxDelta) delta = -maxDelta;
-        return from + delta;
-    }
-
-    // Normalize to [-180,180)
-    private static float wrapDegrees(float angle) {
-        angle = (angle % 360.0f);
-        if (angle >= 180.0f) angle -= 360.0f;
-        if (angle < -180.0f) angle += 360.0f;
-        return angle;
-    }
+    // Aim math (intercept prediction, ballistic pitch, angle interpolation) lives in
+    // RecruitAimSolver — see applyAdvancedAim() call site above.
 
     // ── Role-weight stat-modifier helpers ─────────────────────────────────────
 
@@ -876,125 +720,13 @@ public class RecruitRangedGunnerAttackGoal extends Goal {
      * </ul>
      *
      * <p>Only called during the profile-refresh window (every {@link #ROLE_CACHE_INTERVAL} ticks)
-     * so entity scanning does not occur every tick.
+     * so entity scanning does not occur every tick. Scoring itself is delegated to
+     * {@link RecruitTargetScorer}.
      */
     private void pickBestRoleAwareTarget() {
-        double searchRadius = Math.max(currentProfile.preferredRange * 2.0, MIN_TARGET_SEARCH_RADIUS);
-        List<LivingEntity> candidates = mob.level().getEntitiesOfClass(
-                LivingEntity.class,
-                mob.getBoundingBox().inflate(searchRadius),
-                e -> e != mob && e.isAlive() && !mob.isAlliedTo(e) && mob.canAttack(e));
-
-        if (candidates.isEmpty()) {
-            return;
-        }
-
-        LivingEntity best = null;
-        double bestScore = Double.NEGATIVE_INFINITY;
-        for (LivingEntity candidate : candidates) {
-            double score = scoreTargetForRole(candidate);
-            if (score > bestScore) {
-                bestScore = score;
-                best = candidate;
-            }
-        }
-
+        LivingEntity best = RecruitTargetScorer.pickBestRoleAwareTarget(mob, cachedRole, currentProfile.preferredRange);
         if (best != null) {
             mob.setTarget(best);
         }
-    }
-
-    /**
-     * Computes a priority score for a target candidate based on {@link #cachedRole}.
-     * Higher score = higher priority.  Scores from different roles are not directly
-     * comparable, but within any one role they rank candidates correctly.
-     */
-    private double scoreTargetForRole(LivingEntity target) {
-        double dist = mob.distanceTo(target);
-        RecruitGunRole role = cachedRole != null ? cachedRole : RecruitGunRole.BASIC_RANGED;
-        return switch (role) {
-            case SIDEARM         -> scoreForSidearm(dist);
-            case BASIC_RANGED    -> scoreForBasicRanged(dist);
-            case TACTICAL_RANGED -> scoreForTacticalRanged(dist, target);
-            case HEAVY           -> scoreForHeavy(dist, target);
-            case UTILITY         -> scoreForUtility(dist, target);
-        };
-    }
-
-    /**
-     * SIDEARM: strongly prefers the closest threat.
-     * Score decays as inverse-square of distance so even modest range differences
-     * produce a large preference for the nearer target.
-     */
-    private static double scoreForSidearm(double dist) {
-        double d = dist + SIDEARM_DISTANCE_OFFSET;
-        return SIDEARM_SCORE_MULTIPLIER / (d * d);
-    }
-
-    /**
-     * BASIC_RANGED: simple nearest-first — inverse of distance.
-     * Reproduces the vanilla "attack nearest enemy" behaviour as a baseline.
-     */
-    private static double scoreForBasicRanged(double dist) {
-        return 1.0 / (dist + 0.1);
-    }
-
-    /**
-     * TACTICAL_RANGED: rifles prefer exposed and vulnerable targets.
-     * <ul>
-     *   <li>+1.5 bonus when the recruit has clear line of sight (no cover).</li>
-     *   <li>+0–1.0 bonus proportional to how much health the target has already lost.</li>
-     *   <li>Small distance component breaks ties in favour of closer targets.</li>
-     * </ul>
-     */
-    private double scoreForTacticalRanged(double dist, LivingEntity target) {
-        double losBonus     = mob.hasLineOfSight(target) ? TACTICAL_LOS_BONUS : 0.0;
-        double healthRatio  = target.getMaxHealth() > 0
-                              ? target.getHealth() / target.getMaxHealth() : 1.0;
-        double exposedBonus = 1.0 - healthRatio; // 0 (full health) → 1 (nearly dead)
-        double distScore    = 1.0 / (dist * TACTICAL_DISTANCE_SCALE + 1.0);
-        return losBonus + exposedBonus + distScore;
-    }
-
-    /**
-     * HEAVY (rocket launchers / miniguns): prefers clustered enemy groups.
-     * A large cluster count dominates; distance acts as a tiebreaker.
-     */
-    private double scoreForHeavy(double dist, LivingEntity target) {
-        int cluster = countNearbyEnemies(target, HEAVY_CLUSTER_RADIUS);
-        return cluster * HEAVY_CLUSTER_WEIGHT + 1.0 / (dist * HEAVY_DISTANCE_SCALE + 1.0);
-    }
-
-    /**
-     * UTILITY / support: prefers enemies that are actively threatening nearby allies.
-     * Falls back to nearest when no immediate ally threat is detected.
-     */
-    private double scoreForUtility(double dist, LivingEntity target) {
-        double threatBonus = computeAllyThreatBonus(target);
-        return threatBonus * UTILITY_THREAT_WEIGHT + 1.0 / (dist + UTILITY_DISTANCE_OFFSET);
-    }
-
-    /**
-     * Returns the count of valid enemy entities within {@link #HEAVY_CLUSTER_RADIUS} blocks of
-     * {@code center}.  Used by the HEAVY role scorer to identify clustered target groups.
-     */
-    private int countNearbyEnemies(LivingEntity center, double radius) {
-        return mob.level().getEntitiesOfClass(
-                LivingEntity.class,
-                center.getBoundingBox().inflate(radius),
-                e -> e != mob && e != center && e.isAlive()
-                        && !mob.isAlliedTo(e) && mob.canAttack(e)
-        ).size();
-    }
-
-    /**
-     * Returns 1.0 if {@code enemy} is currently targeting an allied entity, 0.0 otherwise.
-     * Used by the UTILITY role scorer to prioritise threats to friendly units.
-     */
-    private double computeAllyThreatBonus(LivingEntity enemy) {
-        if (!(enemy instanceof Mob enemyMob)) return 0.0;
-        LivingEntity enemyTarget = enemyMob.getTarget();
-        if (enemyTarget == null) return 0.0;
-        return mob.isAlliedTo(enemyTarget) ? 1.0 : 0.0;
     }
 }
