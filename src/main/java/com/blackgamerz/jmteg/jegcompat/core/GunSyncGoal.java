@@ -63,7 +63,7 @@ public class GunSyncGoal extends Goal {
             // Try to consume from inventory first (inventory-first semantics).
             int consumedFromInv = 0;
             try {
-                consumedFromInv = MobAiInjector.removeAmmoFromInventory(mob, config.poolId, delta);
+                consumedFromInv = RecruitInventoryAmmoAccessor.removeAmmoFromInventory(mob, config.poolId, delta);
             } catch (Throwable t) {
                 // defensive: if reflection helper fails, fallback to pool-only below
             }

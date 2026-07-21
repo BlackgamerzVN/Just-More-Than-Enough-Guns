@@ -1,50 +1,50 @@
 package com.blackgamerz.jmteg.jegcompat.core;
 
-import com.blackgamerz.jmteg.compat.ReflectionCache;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.util.RandomSource;
-import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.PathfinderMob;
-import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraftforge.common.capabilities.ForgeCapabilities;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.TickEvent.ServerTickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.loading.FMLPaths;
 import net.minecraftforge.server.ServerLifecycleHooks;
-import net.minecraftforge.items.IItemHandler;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.*;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * MobAiInjector (reflection-only JEG detection + inventory-aware, deterministic seeding, seed-once).
  *
- * - Seeds pool from mob inventory only (deterministic) once per entity (marking mob as seeded).
- * - If no inventory ammo found at seed time, pool is cleared to 0 and magazine is set to 0.
- * - Detects JEG Gun properties via reflection at runtime (no compile-time dependency).
+ * <p>This class is the event-driven orchestrator only: it owns the per-mob watch state
+ * (which mobs are being tracked, their last-seen ammo count, pending reapply ticks) and
+ * reacts to entity join / server tick events. The actual reflection-based work is
+ * delegated to focused helper classes in this package:</p>
+ * <ul>
+ *   <li>{@link JegGunDetector} — detects JEG Gun properties (pool id, max ammo, reload kind) from an ItemStack.</li>
+ *   <li>{@link RecruitInventoryAmmoAccessor} — counts/removes ammo items in a Recruits-compatible entity inventory.</li>
+ *   <li>{@link MobAiScannerConfig} — loads the periodic mob-scanner's interval/radius settings.</li>
+ * </ul>
  *
- * Package/modid kept as in your project.
+ * <p>Behavior:</p>
+ * <ul>
+ *   <li>Seeds pool from mob inventory only (deterministic) once per entity (marking mob as seeded).</li>
+ *   <li>If no inventory ammo found at seed time, pool is cleared to 0 and magazine is set to 0.</li>
+ *   <li>Detects JEG Gun properties via reflection at runtime (no compile-time dependency).</li>
+ * </ul>
  */
 @Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.FORGE, modid = "jmteg")
 public final class MobAiInjector {
@@ -54,7 +54,7 @@ public final class MobAiInjector {
     private static final Map<UUID, Integer> lastAmmoCounts = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> pendingReapply = new ConcurrentHashMap<>();
 
-    private static final ScannerConfigManager scannerConfigManager = new ScannerConfigManager();
+    private static final MobAiScannerConfig scannerConfig = new MobAiScannerConfig();
     private static long tickCounter = 0L;
 
     private static final String SEEDED_TAG = "jmteg_ammo_seeded";
@@ -74,7 +74,7 @@ public final class MobAiInjector {
         if (fqcn.contains("talhanation.recruits") || fqcn.contains(".recruits.")) return;
 
         GunConfigManager.ensureLoaded();
-        scannerConfigManager.ensureLoaded();
+        scannerConfig.ensureLoaded();
 
         ItemStack main = mob.getMainHandItem();
         if (main == null || main.isEmpty()) return;
@@ -84,7 +84,7 @@ public final class MobAiInjector {
         if (itemKey == null) return;
 
         // Determine canonical poolId and maxAmmo (config or dynamic JEG via reflection)
-        Optional<DetectedGun> detected = detectJegGunData(main);
+        Optional<JegGunDetector.DetectedGun> detected = JegGunDetector.detect(main);
         ResourceLocation poolId = null;
         int maxAmmo = 0;
         GunConfig.ReloadKind reloadKind = null;
@@ -95,7 +95,7 @@ public final class MobAiInjector {
             maxAmmo = cfg.maxAmmo;
             reloadKind = cfg.reloadKind;
         } else if (detected.isPresent()) {
-            DetectedGun d = detected.get();
+            JegGunDetector.DetectedGun d = detected.get();
             poolId = d.poolId;
             maxAmmo = d.maxAmmo;
             reloadKind = d.kind;
@@ -107,7 +107,7 @@ public final class MobAiInjector {
         // Seed once: skip if already seeded
         if (!mob.getTags().contains(SEEDED_TAG)) {
             // Deterministic seeding: set pool to inventory count, or clear to 0 if none.
-            int inventoryAmmo = countAmmoInInventory(mob, poolId);
+            int inventoryAmmo = RecruitInventoryAmmoAccessor.countAmmoInInventory(mob, poolId);
             int currentPool = MobAmmoHelper.getAmmoPool(mob, poolId);
             if (inventoryAmmo > 0) {
                 if (currentPool != inventoryAmmo) {
@@ -131,12 +131,12 @@ public final class MobAiInjector {
         }
 
         // attach GunSyncGoal (pass a minimal GunConfig if needed)
-        mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
+        mob.goalSelector.addGoal(0, new GunSyncGoal(mob, JegGunDetector.makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
 
         if (event.getLevel() instanceof ServerLevel serverLevel) {
             UUID id = mob.getUUID();
             watchedLevels.put(id, serverLevel);
-            lastAmmoCounts.put(id, getAmmoCountFromStack(main));
+            lastAmmoCounts.put(id, JegGunDetector.getAmmoCountFromStack(main));
             pendingReapply.put(id, serverLevel.getGameTime() + 1L);
         }
     }
@@ -144,7 +144,7 @@ public final class MobAiInjector {
     @SubscribeEvent
     public static void onServerTick(ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
-        scannerConfigManager.ensureLoaded();
+        scannerConfig.ensureLoaded();
         tickCounter++;
 
         // pending reapply
@@ -165,7 +165,7 @@ public final class MobAiInjector {
                             if (main != null && !main.isEmpty()) {
                                 Item item = main.getItem();
                                 ResourceLocation itemKey = BuiltInRegistries.ITEM.getKey(item);
-                                Optional<DetectedGun> detected = detectJegGunData(main);
+                                Optional<JegGunDetector.DetectedGun> detected = JegGunDetector.detect(main);
 
                                 ResourceLocation poolId = null;
                                 int maxAmmo = 0;
@@ -177,7 +177,7 @@ public final class MobAiInjector {
                                     maxAmmo = cfg.maxAmmo;
                                     reloadKind = cfg.reloadKind;
                                 } else if (detected.isPresent()) {
-                                    DetectedGun d = detected.get();
+                                    JegGunDetector.DetectedGun d = detected.get();
                                     poolId = d.poolId;
                                     maxAmmo = d.maxAmmo;
                                     reloadKind = d.kind;
@@ -186,7 +186,7 @@ public final class MobAiInjector {
                                 if (poolId != null) {
                                     // Seed once during reapply if not already seeded
                                     if (!mob.getTags().contains(SEEDED_TAG)) {
-                                        int inventoryAmmo = countAmmoInInventory(mob, poolId);
+                                        int inventoryAmmo = RecruitInventoryAmmoAccessor.countAmmoInInventory(mob, poolId);
                                         int currentPool2 = MobAmmoHelper.getAmmoPool(mob, poolId);
                                         if (inventoryAmmo > 0) {
                                             if (currentPool2 != inventoryAmmo) {
@@ -205,7 +205,7 @@ public final class MobAiInjector {
                                             mob.addTag(SEEDED_TAG);
                                         }
                                     }
-                                    mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
+                                    mob.goalSelector.addGoal(0, new GunSyncGoal(mob, JegGunDetector.makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
                                 }
                             }
                         }
@@ -244,7 +244,7 @@ public final class MobAiInjector {
 
                 Item item = main.getItem();
                 ResourceLocation itemKey = BuiltInRegistries.ITEM.getKey(item);
-                Optional<DetectedGun> detected = detectJegGunData(main);
+                Optional<JegGunDetector.DetectedGun> detected = JegGunDetector.detect(main);
 
                 ResourceLocation poolId = null;
                 int maxAmmo = 0;
@@ -256,7 +256,7 @@ public final class MobAiInjector {
                     maxAmmo = cfg.maxAmmo;
                     reloadKind = cfg.reloadKind;
                 } else if (detected.isPresent()) {
-                    DetectedGun d = detected.get();
+                    JegGunDetector.DetectedGun d = detected.get();
                     poolId = d.poolId;
                     maxAmmo = d.maxAmmo;
                     reloadKind = d.kind;
@@ -268,13 +268,13 @@ public final class MobAiInjector {
                     continue;
                 }
 
-                int curAmmo = getAmmoCountFromStack(main);
+                int curAmmo = JegGunDetector.getAmmoCountFromStack(main);
                 int prevAmmo = lastAmmoCounts.getOrDefault(id, -1);
 
                 // If ammo increased externally (another AI reloaded), consume delta from inventory then pool
                 if (prevAmmo >= 0 && curAmmo > prevAmmo) {
                     int delta = curAmmo - prevAmmo;
-                    int consumedFromInv = removeAmmoFromInventory(mob, poolId, delta);
+                    int consumedFromInv = RecruitInventoryAmmoAccessor.removeAmmoFromInventory(mob, poolId, delta);
                     int remaining = delta - consumedFromInv;
                     int consumedFromPool = 0;
                     if (remaining > 0) {
@@ -296,7 +296,7 @@ public final class MobAiInjector {
                 // If empty, attempt to reload by consuming inventory first, then pool
                 if (curAmmo <= 0) {
                     if (reloadKind == GunConfig.ReloadKind.SINGLE_ITEM) {
-                        int consumedInv = removeAmmoFromInventory(mob, poolId, 1);
+                        int consumedInv = RecruitInventoryAmmoAccessor.removeAmmoFromInventory(mob, poolId, 1);
                         if (consumedInv > 0) {
                             main.getOrCreateTag().putInt("AmmoCount", maxAmmo);
                             curAmmo = maxAmmo;
@@ -312,7 +312,7 @@ public final class MobAiInjector {
                         }
                     } else {
                         int needed = Math.max(0, maxAmmo - curAmmo);
-                        int consumedInv = removeAmmoFromInventory(mob, poolId, needed);
+                        int consumedInv = RecruitInventoryAmmoAccessor.removeAmmoFromInventory(mob, poolId, needed);
                         int afterInv = curAmmo + consumedInv;
                         if (consumedInv < needed) {
                             int consumedPool = MobAmmoHelper.consumeAmmo(mob, poolId, needed - consumedInv);
@@ -333,14 +333,14 @@ public final class MobAiInjector {
         }
 
         // scanner: discover mobs later acquiring JEG guns (seed-once from inventory when possible)
-        long interval = scannerConfigManager.get().intervalTicks;
+        long interval = scannerConfig.get().intervalTicks;
         if (interval > 0 && tickCounter % interval == 0L) {
             try {
                 MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
                 if (server != null) {
                     for (ServerLevel level : server.getAllLevels()) {
                         for (ServerPlayer player : level.players()) {
-                            double radius = scannerConfigManager.get().radius;
+                            double radius = scannerConfig.get().radius;
                             List<PathfinderMob> nearby = level.getEntitiesOfClass(
                                     PathfinderMob.class,
                                     player.getBoundingBox().inflate(radius),
@@ -359,7 +359,7 @@ public final class MobAiInjector {
                                 if (itemKey == null) continue;
 
                                 GunConfig cfg = itemKey == null ? null : GunConfigManager.GUN_CONFIGS.get(itemKey);
-                                Optional<DetectedGun> detected2 = detectJegGunData(main);
+                                Optional<JegGunDetector.DetectedGun> detected2 = JegGunDetector.detect(main);
 
                                 ResourceLocation poolId = null;
                                 int maxAmmo = 0;
@@ -370,7 +370,7 @@ public final class MobAiInjector {
                                     maxAmmo = cfg.maxAmmo;
                                     reloadKind = cfg.reloadKind;
                                 } else if (detected2.isPresent()) {
-                                    DetectedGun d = detected2.get();
+                                    JegGunDetector.DetectedGun d = detected2.get();
                                     poolId = d.poolId;
                                     maxAmmo = d.maxAmmo;
                                     reloadKind = d.kind;
@@ -380,7 +380,7 @@ public final class MobAiInjector {
 
                                 // Seed once only
                                 if (!mob.getTags().contains(SEEDED_TAG)) {
-                                    int inventoryAmmo = countAmmoInInventory(mob, poolId);
+                                    int inventoryAmmo = RecruitInventoryAmmoAccessor.countAmmoInInventory(mob, poolId);
                                     int currentPool = MobAmmoHelper.getAmmoPool(mob, poolId);
                                     if (inventoryAmmo > 0) {
                                         if (currentPool != inventoryAmmo) {
@@ -391,9 +391,9 @@ public final class MobAiInjector {
                                         LOGGER.info("Scanner: seeded mob {} pool {} from inventory ({} items) -> pool={}", id, poolId, inventoryAmmo, MobAmmoHelper.getAmmoPool(mob, poolId));
                                     } else {
                                         LOGGER.info("Scanner: no exact-match ammo '{}' in inventory for mob {} — dumping contents", poolId, id);
-                                        dumpInventoryContents(mob);
+                                        RecruitInventoryAmmoAccessor.dumpInventoryContents(mob);
 
-                                        int fuzzy = countAmmoInInventoryFuzzy(mob, poolId);
+                                        int fuzzy = RecruitInventoryAmmoAccessor.countAmmoInInventoryFuzzy(mob, poolId);
                                         if (fuzzy > 0) {
                                             LOGGER.info("Scanner: fuzzy-match would have found {} items for pool {} on mob {} but deterministic seeding does not use fuzzy", fuzzy, poolId, id);
                                         }
@@ -410,9 +410,9 @@ public final class MobAiInjector {
                                     LOGGER.debug("Scanner: mob {} already seeded, skipping", id);
                                 }
 
-                                mob.goalSelector.addGoal(0, new GunSyncGoal(mob, makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
+                                mob.goalSelector.addGoal(0, new GunSyncGoal(mob, JegGunDetector.makeGunConfig(itemKey, maxAmmo, reloadKind, poolId)));
                                 watchedLevels.put(id, level);
-                                lastAmmoCounts.put(id, getAmmoCountFromStack(main));
+                                lastAmmoCounts.put(id, JegGunDetector.getAmmoCountFromStack(main));
                                 LOGGER.debug("Scanner: started watching mob {} holding {}", id, itemKey);
                             }
                         }
@@ -421,671 +421,6 @@ public final class MobAiInjector {
             } catch (Throwable t) {
                 LOGGER.error("Error during mob scanner", t);
             }
-        }
-    }
-
-    // Minimal holder used when JEG data is available via reflection
-    private static final class DetectedGun {
-        final ResourceLocation poolId;
-        final int maxAmmo;
-        final GunConfig.ReloadKind kind;
-
-        DetectedGun(ResourceLocation poolId, int maxAmmo, GunConfig.ReloadKind kind) {
-            this.poolId = poolId;
-            this.maxAmmo = maxAmmo;
-            this.kind = kind;
-        }
-    }
-
-    // Reflection-based detection of JEG Gun properties (no compile-time dependency).
-    private static Optional<DetectedGun> detectJegGunData(ItemStack stack) {
-        try {
-            Class<?> gunItemClass = ReflectionCache.getJegGunItemClass();
-            if (gunItemClass == null) return Optional.empty();
-            Object itemObj = stack.getItem();
-            if (!gunItemClass.isInstance(itemObj)) return Optional.empty();
-
-            Method getModifiedGun = ReflectionCache.findMethod(gunItemClass, "getModifiedGun", ItemStack.class);
-            if (getModifiedGun == null) return Optional.empty();
-            Object gunObj = getModifiedGun.invoke(itemObj, stack);
-            if (gunObj == null) return Optional.empty();
-
-            Method getReloads = ReflectionCache.findMethod(gunObj.getClass(), "getReloads");
-            if (getReloads == null) return Optional.empty();
-            Object reloadsObj = getReloads.invoke(gunObj);
-            if (reloadsObj == null) return Optional.empty();
-
-            Method getReloadType = ReflectionCache.findMethod(reloadsObj.getClass(), "getReloadType");
-            Object reloadTypeObj = getReloadType != null ? getReloadType.invoke(reloadsObj) : null;
-            boolean isSingleItem = false;
-            if (reloadTypeObj != null) {
-                Method nameMethod = ReflectionCache.findMethod(reloadTypeObj.getClass(), "name");
-                if (nameMethod != null) {
-                    String name = (String) nameMethod.invoke(reloadTypeObj);
-                    isSingleItem = "SINGLE_ITEM".equals(name);
-                } else {
-                    isSingleItem = "SINGLE_ITEM".equals(reloadTypeObj.toString());
-                }
-            }
-
-            ResourceLocation poolId = null;
-            int maxAmmo = 0;
-            GunConfig.ReloadKind kind;
-
-            if (isSingleItem) {
-                Method getReloadItem = ReflectionCache.findMethod(reloadsObj.getClass(), "getReloadItem");
-                Object reloadItemObj = getReloadItem != null ? getReloadItem.invoke(reloadsObj) : null;
-                if (reloadItemObj instanceof ResourceLocation rl) {
-                    poolId = rl;
-                } else if (reloadItemObj != null) {
-                    poolId = ResourceLocation.tryParse(reloadItemObj.toString());
-                }
-                kind = GunConfig.ReloadKind.SINGLE_ITEM;
-            } else {
-                Method getProjectile = ReflectionCache.findMethod(gunObj.getClass(), "getProjectile");
-                Object projectileObj = getProjectile != null ? getProjectile.invoke(gunObj) : null;
-                if (projectileObj != null) {
-                    Method getItem = ReflectionCache.findMethod(projectileObj.getClass(), "getItem");
-                    Object itemIdObj = getItem != null ? getItem.invoke(projectileObj) : null;
-                    if (itemIdObj instanceof ResourceLocation rl) {
-                        poolId = rl;
-                    } else if (itemIdObj != null) {
-                        poolId = ResourceLocation.tryParse(itemIdObj.toString());
-                    }
-                }
-                kind = GunConfig.ReloadKind.PROJECTILE_OR_MAG;
-            }
-
-            Method getMaxAmmo = ReflectionCache.findMethod(reloadsObj.getClass(), "getMaxAmmo");
-            if (getMaxAmmo != null) {
-                Object maxAmmoObj = getMaxAmmo.invoke(reloadsObj);
-                if (maxAmmoObj instanceof Number n) {
-                    maxAmmo = n.intValue();
-                } else if (maxAmmoObj != null) {
-                    maxAmmo = Integer.parseInt(maxAmmoObj.toString());
-                }
-            }
-
-            if (poolId == null) return Optional.empty();
-            return Optional.of(new DetectedGun(poolId, Math.max(0, maxAmmo), kind));
-        } catch (Throwable t) {
-            LOGGER.debug("detectJegGunData failed", t);
-            return Optional.empty();
-        }
-    }
-
-    // Dump inventory contents (index -> item id -> count)
-    private static void dumpInventoryContents(Entity entity) {
-        try {
-            StringBuilder sb = new StringBuilder();
-            sb.append("Inventory dump for ").append(entity.getEncodeId()).append(" / ").append(entity.getUUID()).append(":");
-            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
-            if (getInventory != null) {
-                Object inv = getInventory.invoke(entity);
-                if (inv instanceof Container container) {
-                    for (int i = 0; i < container.getContainerSize(); i++) {
-                        ItemStack st = container.getItem(i);
-                        ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
-                        sb.append("\n  slot ").append(i).append(": ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
-                    }
-                    LOGGER.info(sb.toString());
-                    return;
-                } else {
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList;
-                            for (int i = 0; i < list.size(); i++) {
-                                ItemStack st = list.get(i);
-                                ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
-                                sb.append("\n  inv[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
-                            }
-                            LOGGER.info(sb.toString());
-                            return;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            }
-            try {
-                Field invField = entity.getClass().getDeclaredField("inventory");
-                invField.setAccessible(true);
-                Object inv = invField.get(entity);
-                if (inv != null) {
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList;
-                            for (int i = 0; i < list.size(); i++) {
-                                ItemStack st = list.get(i);
-                                ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
-                                sb.append("\n  inventory[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
-                            }
-                            LOGGER.info(sb.toString());
-                            return;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-            // Capability fallback
-            try {
-                entity.getCapability(ForgeCapabilities.ITEM_HANDLER).ifPresent(handler -> {
-                    StringBuilder sbb = new StringBuilder(sb);
-                    IItemHandler h = handler;
-                    for (int i = 0; i < h.getSlots(); i++) {
-                        ItemStack st = h.getStackInSlot(i);
-                        ResourceLocation key = st == null || st.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(st.getItem());
-                        sbb.append("\n  capability.slot[").append(i).append("]: ").append(key == null ? "<empty>" : key.toString()).append(" x").append(st == null ? 0 : st.getCount());
-                    }
-                    LOGGER.info(sbb.toString());
-                });
-            } catch (Throwable ignored) {}
-            LOGGER.info(sb.append("\n  (no accessible inventory found)").toString());
-        } catch (Throwable t) {
-            LOGGER.warn("Failed to dump inventory for entity {}", entity.getUUID(), t);
-        }
-    }
-
-    // Fuzzy count: count items whose id string or path contains the poolId path or namespace
-    private static int countAmmoInInventoryFuzzy(Entity entity, ResourceLocation poolId) {
-        int total = 0;
-        try {
-            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
-            String poolPath = poolId == null ? "" : poolId.getPath();
-            String poolNs = poolId == null ? "" : poolId.getNamespace();
-            if (getInventory != null) {
-                Object inv = getInventory.invoke(entity);
-                if (inv instanceof Container container) {
-                    int start = Math.min(6, container.getContainerSize());
-                    for (int i = start; i < container.getContainerSize(); i++) {
-                        ItemStack st = container.getItem(i);
-                        if (!st.isEmpty()) {
-                            ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                            if (key != null) {
-                                String path = key.getPath();
-                                String id = key.toString();
-                                if (path.contains(poolPath) || id.contains(poolPath) || key.getNamespace().equals(poolNs) || id.contains(poolNs)) {
-                                    total += st.getCount();
-                                }
-                            }
-                        }
-                    }
-                    return total;
-                } else {
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList;
-                            for (int i = 6; i < list.size(); i++) {
-                                ItemStack st = list.get(i);
-                                if (st != null && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (key != null) {
-                                        String path = key.getPath();
-                                        String id = key.toString();
-                                        if (path.contains(poolPath) || id.contains(poolPath) || key.getNamespace().equals(poolNs) || id.contains(poolNs)) {
-                                            total += st.getCount();
-                                        }
-                                    }
-                                }
-                            }
-                            return total;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            }
-
-            try {
-                Field invField = entity.getClass().getDeclaredField("inventory");
-                invField.setAccessible(true);
-                Object inv = invField.get(entity);
-                if (inv != null) {
-                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
-                        try {
-                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
-                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
-                            int size = (Integer) sizeM.invoke(inv);
-                            for (int i = 6; i < size; i++) {
-                                Object stObj = getItemM.invoke(inv, i);
-                                if (stObj instanceof ItemStack st && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (key != null) {
-                                        String path = key.getPath();
-                                        String id = key.toString();
-                                        if (path.contains(poolPath) || id.contains(poolPath) || key.getNamespace().equals(poolNs) || id.contains(poolNs)) {
-                                            total += st.getCount();
-                                        }
-                                    }
-                                }
-                            }
-                            return total;
-                        } catch (Throwable ignored) {}
-                    }
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList;
-                            for (int i = 6; i < list.size(); i++) {
-                                ItemStack st = list.get(i);
-                                if (st != null && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (key != null) {
-                                        String path = key.getPath();
-                                        String id = key.toString();
-                                        if (path.contains(poolPath) || id.contains(poolPath) || key.getNamespace().equals(poolNs) || id.contains(poolNs)) {
-                                            total += st.getCount();
-                                        }
-                                    }
-                                }
-                            }
-                            return total;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-
-            // capability fallback: skip first 6 slots
-            try {
-                var optional = entity.getCapability(ForgeCapabilities.ITEM_HANDLER);
-                if (optional.isPresent()) {
-                    IItemHandler h = optional.orElse(null);
-                    if (h != null) {
-                        int start = Math.min(6, h.getSlots());
-                        for (int i = start; i < h.getSlots(); i++) {
-                            ItemStack st = h.getStackInSlot(i);
-                            if (!st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (key != null) {
-                                    String path = key.getPath();
-                                    String id = key.toString();
-                                    if (path.contains(poolPath) || id.contains(poolPath) || key.getNamespace().equals(poolNs) || id.contains(poolNs)) {
-                                        total += st.getCount();
-                                    }
-                                }
-                            }
-                        }
-                        return total;
-                    }
-                }
-            } catch (Throwable ignored) {}
-        } catch (Throwable t) {
-            LOGGER.debug("countAmmoInInventoryFuzzy reflection failed", t);
-        }
-        return total;
-    }
-
-    public static int countAmmoInInventory(Entity entity, ResourceLocation ammoId) {
-        try {
-            // 1) try getInventory()
-            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
-            if (getInventory != null) {
-                Object inv = getInventory.invoke(entity);
-                if (inv instanceof Container container) {
-                    int total = 0;
-                    int start = Math.min(6, container.getContainerSize());
-                    for (int i = start; i < container.getContainerSize(); i++) {
-                        ItemStack st = container.getItem(i);
-                        if (!st.isEmpty()) {
-                            ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                            if (ammoId.equals(key)) total += st.getCount();
-                        }
-                    }
-                    return total;
-                }
-                // handle RecruitSimpleContainer specifically if it isn't a Container (defensive)
-                if (inv != null && ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
-                    try {
-                        Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
-                        Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
-                        int size = (Integer) sizeM.invoke(inv);
-                        int total = 0;
-                        for (int i = 6; i < size; i++) { // only general inventory
-                            Object stObj = getItemM.invoke(inv, i);
-                            if (stObj instanceof ItemStack st && !st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) total += st.getCount();
-                            }
-                        }
-                        return total;
-                    } catch (Throwable ignored) {}
-                }
-                try {
-                    Field itemsField = inv.getClass().getDeclaredField("items");
-                    itemsField.setAccessible(true);
-                    Object listObj = itemsField.get(inv);
-                    if (listObj instanceof List<?> rawList) {
-                        @SuppressWarnings("unchecked")
-                        List<ItemStack> list = (List<ItemStack>) rawList;
-                        int total = 0;
-                        for (int i = 6; i < list.size(); i++) { // skip 0..5
-                            ItemStack st = list.get(i);
-                            if (st != null && !st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) total += st.getCount();
-                            }
-                        }
-                        return total;
-                    }
-                } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-            }
-
-            // 2) reflect 'inventory' field
-            try {
-                Field invField = entity.getClass().getDeclaredField("inventory");
-                invField.setAccessible(true);
-                Object inv = invField.get(entity);
-                if (inv != null) {
-                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
-                        try {
-                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
-                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
-                            int size = (Integer) sizeM.invoke(inv);
-                            int total = 0;
-                            for (int i = 6; i < size; i++) {
-                                Object stObj = getItemM.invoke(inv, i);
-                                if (stObj instanceof ItemStack st && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (ammoId.equals(key)) total += st.getCount();
-                                }
-                            }
-                            return total;
-                        } catch (Throwable ignored) {}
-                    }
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList;
-                            int total = 0;
-                            for (int i = 6; i < list.size(); i++) {
-                                ItemStack st = list.get(i);
-                                if (st != null && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (ammoId.equals(key)) total += st.getCount();
-                                }
-                            }
-                            return total;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-
-            // 3) capability fallback: IItemHandler
-            try {
-                var optional = entity.getCapability(ForgeCapabilities.ITEM_HANDLER);
-                if (optional.isPresent()) {
-                    IItemHandler h = optional.orElse(null);
-                    if (h != null) {
-                        int total = 0;
-                        int start = Math.min(6, h.getSlots()); // skip 0..5 if present
-                        for (int i = start; i < h.getSlots(); i++) {
-                            ItemStack st = h.getStackInSlot(i);
-                            if (!st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) total += st.getCount();
-                            }
-                        }
-                        return total;
-                    }
-                }
-            } catch (Throwable ignored) {}
-        } catch (Throwable t) {
-            LOGGER.debug("countAmmoInInventory reflection failed", t);
-        }
-        return 0;
-    }
-
-    public static int removeAmmoFromInventory(Entity entity, ResourceLocation ammoId, int amount) {
-        if (amount <= 0) return 0;
-        int removedTotal = 0;
-        try {
-            // 1) try getInventory()
-            Method getInventory = ReflectionCache.findMethod(entity.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
-
-            if (getInventory != null) {
-                Object inv = getInventory.invoke(entity);
-                if (inv instanceof Container container) {
-                    int start = Math.min(6, container.getContainerSize());
-                    for (int i = start; i < container.getContainerSize() && amount > 0; i++) {
-                        ItemStack st = container.getItem(i);
-                        if (!st.isEmpty()) {
-                            ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                            if (ammoId.equals(key)) {
-                                int take = Math.min(amount, st.getCount());
-                                container.removeItem(i, take);
-                                removedTotal += take;
-                                amount -= take;
-                            }
-                        }
-                    }
-                    return removedTotal;
-                }
-                // RecruitSimpleContainer specific
-                if (inv != null && ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
-                    try {
-                        Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
-                        Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
-                        Method setItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_ITEM, int.class, ItemStack.class);
-                        int size = (Integer) sizeM.invoke(inv);
-                        for (int i = 6; i < size && amount > 0; i++) {
-                            Object stObj = getItemM.invoke(inv, i);
-                            if (stObj instanceof ItemStack st && !st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) {
-                                    int take = Math.min(amount, st.getCount());
-                                    st.shrink(take);
-                                    removedTotal += take;
-                                    amount -= take;
-                                    if (st.getCount() <= 0) setItemM.invoke(inv, i, ItemStack.EMPTY);
-                                }
-                            }
-                        }
-                        try { Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED); if (setChanged != null) setChanged.invoke(inv); } catch (Throwable ignored) {}
-                        return removedTotal;
-                    } catch (Throwable ignored) {}
-                }
-
-                try {
-                    Field itemsField = inv.getClass().getDeclaredField("items");
-                    itemsField.setAccessible(true);
-                    Object listObj = itemsField.get(inv);
-                    if (listObj instanceof List<?> rawList) {
-                        @SuppressWarnings("unchecked")
-                        List<ItemStack> list = (List<ItemStack>) rawList;
-                        for (int i = 6; i < list.size() && amount > 0; i++) {
-                            ItemStack st = list.get(i);
-                            if (st != null && !st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) {
-                                    int take = Math.min(amount, st.getCount());
-                                    st.shrink(take);
-                                    removedTotal += take;
-                                    amount -= take;
-                                    if (st.getCount() <= 0) list.set(i, ItemStack.EMPTY);
-                                }
-                            }
-                        }
-                        try {
-                            Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
-                            if (setChanged != null) setChanged.invoke(inv);
-                        } catch (Throwable ignored) {}
-                        return removedTotal;
-                    }
-                } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-            }
-
-            // 2) reflect 'inventory' field
-            try {
-                Field invField = entity.getClass().getDeclaredField("inventory");
-                invField.setAccessible(true);
-                Object inv = invField.get(entity);
-                if (inv != null) {
-                    if (ReflectionCache.RECRUIT_SIMPLE_CONTAINER_CLASS_NAME.equals(inv.getClass().getName())) {
-                        try {
-                            Method sizeM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
-                            Method getItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
-                            Method setItemM = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_ITEM, int.class, ItemStack.class);
-                            int size = (Integer) sizeM.invoke(inv);
-                            for (int i = 6; i < size && amount > 0; i++) {
-                                Object stObj = getItemM.invoke(inv, i);
-                                if (stObj instanceof ItemStack st && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (ammoId.equals(key)) {
-                                        int take = Math.min(amount, st.getCount());
-                                        st.shrink(take);
-                                        removedTotal += take;
-                                        amount -= take;
-                                        if (st.getCount() <= 0) setItemM.invoke(inv, i, ItemStack.EMPTY);
-                                    }
-                                }
-                            }
-                            try {
-                                Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
-                                if (setChanged != null) setChanged.invoke(inv);
-                            } catch (Throwable ignored) {}
-                            return removedTotal;
-                        } catch (Throwable ignored) {}
-                    }
-
-                    try {
-                        Field itemsField = inv.getClass().getDeclaredField("items");
-                        itemsField.setAccessible(true);
-                        Object listObj = itemsField.get(inv);
-                        if (listObj instanceof List<?> rawList2) {
-                            @SuppressWarnings("unchecked")
-                            List<ItemStack> list = (List<ItemStack>) rawList2;
-                            for (int i = 6; i < list.size() && amount > 0; i++) {
-                                ItemStack st = list.get(i);
-                                if (st != null && !st.isEmpty()) {
-                                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                    if (ammoId.equals(key)) {
-                                        int take = Math.min(amount, st.getCount());
-                                        st.shrink(take);
-                                        removedTotal += take;
-                                        amount -= take;
-                                        if (st.getCount() <= 0) list.set(i, ItemStack.EMPTY);
-                                    }
-                                }
-                            }
-                            try {
-                                Method setChanged = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_SET_CHANGED);
-                                if (setChanged != null) setChanged.invoke(inv);
-                            } catch (Throwable ignored) {}
-                            return removedTotal;
-                        }
-                    } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-                }
-            } catch (NoSuchFieldException | IllegalAccessException ignored) {}
-
-            // 3) capability fallback: IItemHandler (skip first 6 slots)
-            try {
-                var optional = entity.getCapability(ForgeCapabilities.ITEM_HANDLER);
-                if (optional.isPresent()) {
-                    IItemHandler h = optional.orElse(null);
-                    if (h != null) {
-                        int start = Math.min(6, h.getSlots());
-                        for (int i = start; i < h.getSlots() && amount > 0; i++) {
-                            ItemStack st = h.getStackInSlot(i);
-                            if (!st.isEmpty()) {
-                                ResourceLocation key = BuiltInRegistries.ITEM.getKey(st.getItem());
-                                if (ammoId.equals(key)) {
-                                    int toTake = Math.min(amount, st.getCount());
-                                    ItemStack extracted = h.extractItem(i, toTake, false);
-                                    if (!extracted.isEmpty()) {
-                                        removedTotal += extracted.getCount();
-                                        amount -= extracted.getCount();
-                                    }
-                                }
-                            }
-                        }
-                        return removedTotal;
-                    }
-                }
-            } catch (Throwable ignored) {}
-        } catch (Throwable t) {
-            LOGGER.debug("removeAmmoFromInventory reflection failed", t);
-        }
-
-        return removedTotal;
-    }
-
-    private static int getAmmoCountFromStack(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return 0;
-        CompoundTag tag = stack.getTag();
-        return tag != null ? tag.getInt("AmmoCount") : 0;
-    }
-
-    // Minimal helper to create GunConfig object used by your existing code
-    private static GunConfig makeGunConfig(ResourceLocation itemKey, int maxAmmo, GunConfig.ReloadKind kind, ResourceLocation poolId) {
-        if (itemKey == null) itemKey = ResourceLocation.tryParse("unknown:unknown");
-        return new GunConfig(itemKey, maxAmmo, kind, poolId);
-    }
-
-    // Scanner config manager (same as before)
-    private static final class ScannerConfigManager {
-        private static final String SUBPATH = "just_more_than_enough_guns";
-        private static final String FILE_NAME = "scanner.json";
-        private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-        private volatile boolean loaded = false;
-        private ScannerConfig config;
-
-        private static final class ScannerConfig {
-            int intervalTicks = 100;
-            int radius = 64;
-        }
-
-        synchronized void ensureLoaded() {
-            if (loaded) return;
-            loaded = true;
-
-            File cfgDir = FMLPaths.CONFIGDIR.get().toFile();
-            File modDir = new File(cfgDir, SUBPATH);
-            if (!modDir.exists() && !modDir.mkdirs()) {
-                LOGGER.warn("ScannerConfigManager: failed to create config dir " + modDir.getAbsolutePath());
-            }
-            File cfgFile = new File(modDir, FILE_NAME);
-            if (!cfgFile.exists()) {
-                this.config = new ScannerConfig();
-                try (Writer w = new OutputStreamWriter(new FileOutputStream(cfgFile), StandardCharsets.UTF_8)) {
-                    GSON.toJson(this.config, w);
-                    LOGGER.info("ScannerConfigManager: wrote default scanner config to {}", cfgFile.getAbsolutePath());
-                } catch (IOException ex) {
-                    LOGGER.error("ScannerConfigManager: failed to write default config", ex);
-                }
-                return;
-            }
-
-            try (Reader r = new InputStreamReader(new FileInputStream(cfgFile), StandardCharsets.UTF_8)) {
-                Type type = new TypeToken<ScannerConfig>() {}.getType();
-                ScannerConfig read = GSON.fromJson(r, type);
-                if (read == null) {
-                    this.config = new ScannerConfig();
-                } else {
-                    this.config = read;
-                }
-                LOGGER.info("ScannerConfigManager: loaded scanner config (intervalTicks={}, radius={})", this.config.intervalTicks, this.config.radius);
-            } catch (IOException ex) {
-                LOGGER.error("ScannerConfigManager: failed to read config, using defaults", ex);
-                this.config = new ScannerConfig();
-            }
-        }
-
-        ScannerConfig get() {
-            if (!loaded) ensureLoaded();
-            return config != null ? config : new ScannerConfig();
         }
     }
 }
