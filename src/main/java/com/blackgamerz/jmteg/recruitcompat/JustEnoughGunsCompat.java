@@ -141,32 +141,43 @@ public final class JustEnoughGunsCompat {
     public static boolean hasJegGunAmmo(LivingEntity entity, ItemStack gunStack) {
         try {
             // Get the modified gun object via reflection
-            Object gun = gunStack.getItem().getClass()
-                    .getMethod("getModifiedGun", ItemStack.class)
-                    .invoke(gunStack.getItem(), gunStack);
+            Method getModifiedGun = ReflectionCache.findMethod(gunStack.getItem().getClass(), "getModifiedGun", ItemStack.class);
+            if (getModifiedGun == null) return false;
+            Object gun = getModifiedGun.invoke(gunStack.getItem(), gunStack);
 
             if (gun != null) {
                 // Get projectile
-                Object projectile = gun.getClass().getMethod("getProjectile").invoke(gun);
+                Method getProjectileMethod = ReflectionCache.findMethod(gun.getClass(), "getProjectile");
+                if (getProjectileMethod == null) return false;
+                Object projectile = getProjectileMethod.invoke(gun);
+                if (projectile == null) return false;
+
                 // Get ammo item
-                Object ammoItem = projectile.getClass().getMethod("getItem").invoke(projectile);
+                Method getItemMethod = ReflectionCache.findMethod(projectile.getClass(), "getItem");
+                if (getItemMethod == null) return false;
+                Object ammoItem = getItemMethod.invoke(projectile);
 
                 // Try Recruit inventory (reflection for cross-mod support)
-                try {
-                    Class<?> recruitClass = Class.forName("com.talhanation.recruits.entities.RecruitEntity");
-                    if (recruitClass.isInstance(entity)) {
-                        Object inventory = recruitClass.getMethod("getInventory").invoke(entity);
-                        int size = (int) inventory.getClass().getMethod("getContainerSize").invoke(inventory);
-                        for (int i = 0; i < size; i++) {
-                            ItemStack stack = (ItemStack) inventory.getClass()
-                                    .getMethod("getItem", int.class).invoke(inventory, i);
-                            if (!stack.isEmpty() && stack.getItem() == ammoItem) {
-                                return true;
+                Class<?> recruitClass = ReflectionCache.getRecruitEntityClass();
+                if (recruitClass != null && recruitClass.isInstance(entity)) {
+                    Method getInventory = ReflectionCache.findMethod(recruitClass, "getInventory");
+                    if (getInventory != null) {
+                        Object inventory = getInventory.invoke(entity);
+                        if (inventory != null) {
+                            Method getSize = ReflectionCache.findMethod(inventory.getClass(), "getContainerSize");
+                            Method getSlotItem = ReflectionCache.findMethod(inventory.getClass(), "getItem", int.class);
+                            if (getSize != null && getSlotItem != null) {
+                                int size = (int) getSize.invoke(inventory);
+                                for (int i = 0; i < size; i++) {
+                                    ItemStack stack = (ItemStack) getSlotItem.invoke(inventory, i);
+                                    if (!stack.isEmpty() && stack.getItem() == ammoItem) {
+                                        return true;
+                                    }
+                                }
+                                return false;
                             }
                         }
-                        return false;
                     }
-                } catch (ClassNotFoundException ignored) {
                 }
                 // Fallback to hands
                 ItemStack mainhand = entity.getMainHandItem();

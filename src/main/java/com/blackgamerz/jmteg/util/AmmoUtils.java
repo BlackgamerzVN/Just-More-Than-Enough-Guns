@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.util;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import com.blackgamerz.jmteg.config.JmtegConfig;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.item.ItemStack;
@@ -38,8 +39,11 @@ public final class AmmoUtils {
         if (offhand != null && offhand.getItem() == Items.ARROW) count += offhand.getCount();
         // If has inventory (e.g. Recruits): use reflection to look for items/arrow stacks
         try {
-            Object inv = Class.forName("com.talhanation.recruits.entities.inventory.RecruitInventory")
-                    .cast(mob.getClass().getMethod("getInventory").invoke(mob));
+            Class<?> recruitInventoryClass = ReflectionCache.getRecruitInventoryClass();
+            java.lang.reflect.Method getInventory = ReflectionCache.findMethod(mob.getClass(), ReflectionCache.METHOD_GET_INVENTORY);
+            Object inv = (recruitInventoryClass != null && getInventory != null)
+                    ? recruitInventoryClass.cast(getInventory.invoke(mob))
+                    : null;
             if (inv != null) {
                 java.lang.reflect.Field f = inv.getClass().getField("items");
                 Object itemsObj = f.get(inv);

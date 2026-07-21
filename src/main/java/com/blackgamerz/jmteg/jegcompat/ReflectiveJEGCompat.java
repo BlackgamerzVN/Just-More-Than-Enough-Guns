@@ -6,6 +6,8 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
 
@@ -23,6 +25,7 @@ import java.lang.reflect.Method;
  * its safe default — it does <em>not</em> throw.</p>
  */
 public class ReflectiveJEGCompat implements IJEGCompat {
+    private static final Logger LOGGER = LogManager.getLogger("JMT-ReflectiveJEGCompat");
 
     // ── Cached method handles resolved once at construction ───────────────────
     private final Method performGunAttackMethod;   // AIGunEvent.performGunAttack(…)
@@ -49,17 +52,16 @@ public class ReflectiveJEGCompat implements IJEGCompat {
     private final Method projectileGetSpeedMethod; // Gun.Projectile.getSpeed() → double
     private final Method projectileIsGravityMethod;// Gun.Projectile.isGravity() → boolean
 
+    // Modifier/enchantment helpers — mirror JEG's real fire-time math so aim
+    // inputs reflect enchant (e.g. Accelerator) and attachment speed/gravity
+    // scaling instead of only the raw base Gun.Projectile values.
+    private final Method enchantmentGetProjectileSpeedModifierMethod; // GunEnchantmentHelper.getProjectileSpeedModifier(ItemStack) → double
+    private final Method modifierGetModifiedProjectileSpeedMethod;    // GunModifierHelper.getModifiedProjectileSpeed(ItemStack, double) → double
+    private final Method modifierGetModifiedProjectileGravityMethod; // GunModifierHelper.getModifiedProjectileGravity(ItemStack, double) → double
+
     public ReflectiveJEGCompat() {
-        // AIGunEvent.performGunAttack
-        Method performAttack = null;
-        try {
-            Class<?> aiGunEventClass = Class.forName("ttv.migami.jeg.entity.ai.AIGunEvent");
-            performAttack = aiGunEventClass.getDeclaredMethod("performGunAttack",
-                    Mob.class, LivingEntity.class, ItemStack.class,
-                    Class.forName("ttv.migami.jeg.common.Gun"),
-                    float.class, boolean.class);
-        } catch (Throwable ignored) {}
-        this.performGunAttackMethod = performAttack;
+        // AIGunEvent.performGunAttack — resolved once in ReflectionCache's static initializer
+        this.performGunAttackMethod = ReflectionCache.getJeg_aiGunEvent_performGunAttack();
 
         // Assign all remaining handles from ReflectionCache (populated in the same static block)
         this.ejectCasingMethod         = ReflectionCache.getJeg_gunEventBus_ejectCasing();
@@ -76,6 +78,10 @@ public class ReflectiveJEGCompat implements IJEGCompat {
         this.soundsGetFireMethod       = ReflectionCache.getJeg_sounds_getFire();
         this.projectileGetSpeedMethod  = ReflectionCache.getJeg_projectile_getSpeed();
         this.projectileIsGravityMethod = ReflectionCache.getJeg_projectile_isGravity();
+
+        this.enchantmentGetProjectileSpeedModifierMethod = ReflectionCache.getJeg_enchantmentHelper_getProjectileSpeedModifier();
+        this.modifierGetModifiedProjectileSpeedMethod    = ReflectionCache.getJeg_modifierHelper_getModifiedProjectileSpeed();
+        this.modifierGetModifiedProjectileGravityMethod  = ReflectionCache.getJeg_modifierHelper_getModifiedProjectileGravity();
     }
 
     // ── Firing ────────────────────────────────────────────────────────────────
@@ -85,7 +91,9 @@ public class ReflectiveJEGCompat implements IJEGCompat {
         if (performGunAttackMethod == null) return;
         try {
             performGunAttackMethod.invoke(null, shooter, target, itemStack, gun, spreadModifier, slowShot);
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("performGunAttack: reflective invoke failed", t);
+        }
     }
 
     @Override
@@ -93,7 +101,9 @@ public class ReflectiveJEGCompat implements IJEGCompat {
         if (ejectCasingMethod == null) return;
         try {
             ejectCasingMethod.invoke(null, level, shooter);
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            LOGGER.debug("ejectCasing: reflective invoke failed", t);
+        }
     }
 
     // ── Gun-data queries ──────────────────────────────────────────────────────
@@ -170,7 +180,32 @@ public class ReflectiveJEGCompat implements IJEGCompat {
             Object proj = gunGetProjectileMethod.invoke(gun);
             if (proj == null) return 3.0f;
             Object val = projectileGetSpeedMethod.invoke(proj);
-            return val instanceof Number n ? n.floatValue() : 3.0f;
+            double baseSpeed = val instanceof Number n ? n.doubleValue() : 3.0;
+
+            // Apply enchantment (e.g. Accelerator) speed scaling exactly as JEG's real
+            // fire path does: AIGunEvent.performGunAttack / ProjectileEntity both compute
+            // `projectile.getSpeed() * GunEnchantmentHelper.getProjectileSpeedModifier(weapon)`
+            // before handing that to GunModifierHelper for attachment scaling.
+            double speedModifier = 1.0;
+            if (enchantmentGetProjectileSpeedModifierMethod != null) {
+                try {
+                    Object mod = enchantmentGetProjectileSpeedModifierMethod.invoke(null, stack);
+                    if (mod instanceof Number modNumber) speedModifier = modNumber.doubleValue();
+                } catch (Throwable ignored) {
+                    // fall back to no enchantment scaling
+                }
+            }
+            double enchantedSpeed = baseSpeed * speedModifier;
+
+            if (modifierGetModifiedProjectileSpeedMethod != null) {
+                try {
+                    Object modifiedSpeed = modifierGetModifiedProjectileSpeedMethod.invoke(null, stack, enchantedSpeed);
+                    if (modifiedSpeed instanceof Number modifiedNumber) return modifiedNumber.floatValue();
+                } catch (Throwable ignored) {
+                    // fall back to un-attachment-modified (but still enchant-scaled) speed
+                }
+            }
+            return (float) enchantedSpeed;
         } catch (Throwable ignored) {
             return 3.0f;
         }
@@ -184,9 +219,23 @@ public class ReflectiveJEGCompat implements IJEGCompat {
             Object proj = gunGetProjectileMethod.invoke(gun);
             if (proj == null) return 0.04f;
             Object val = projectileIsGravityMethod.invoke(proj);
-            // isGravity() == true  -> use standard gravity constant
-            // isGravity() == false -> projectile is not affected by gravity
-            return Boolean.TRUE.equals(val) ? 0.04f : 0.0f;
+            // isGravity() == false -> projectile is not affected by gravity at all
+            if (!Boolean.TRUE.equals(val)) return 0.0f;
+
+            // Apply attachment gravity scaling exactly as JEG's real fire path does:
+            // ProjectileEntity's modifiedGravity = GunModifierHelper.getModifiedProjectileGravity(weapon, -0.04)
+            if (modifierGetModifiedProjectileGravityMethod != null) {
+                try {
+                    Object modifiedGravity = modifierGetModifiedProjectileGravityMethod.invoke(null, stack, -0.04);
+                    if (modifiedGravity instanceof Number modifiedNumber) {
+                        // Interface convention returns a positive downward-acceleration magnitude.
+                        return (float) Math.abs(modifiedNumber.doubleValue());
+                    }
+                } catch (Throwable ignored) {
+                    // fall back to the unmodified base gravity constant
+                }
+            }
+            return 0.04f;
         } catch (Throwable ignored) {
             return 0.04f;
         }

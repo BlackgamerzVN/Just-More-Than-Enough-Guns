@@ -183,12 +183,14 @@ public final class RecruitGunSelector {
                 Object inv = ReflectionCache.tryGetInventoryObject(mob);
                 if (inv != null) {
                     try {
-                        Method getSize = inv.getClass().getMethod("getContainerSize");
-                        Method getItem = inv.getClass().getMethod("getItem", int.class);
-                        int size = (int) getSize.invoke(inv);
-                        for (int i = 0; i < size; i++) {
-                            ItemStack stack = (ItemStack) getItem.invoke(inv, i);
-                            if (stack != null && !stack.isEmpty()) result.add(stack);
+                        Method getSize = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                        Method getItem = ReflectionCache.findMethod(inv.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+                        if (getSize != null && getItem != null) {
+                            int size = (int) getSize.invoke(inv);
+                            for (int i = 0; i < size; i++) {
+                                ItemStack stack = (ItemStack) getItem.invoke(inv, i);
+                                if (stack != null && !stack.isEmpty()) result.add(stack);
+                            }
                         }
                     } catch (Throwable t) {
                         LOGGER.debug("collectInventory: could not iterate inventory", t);

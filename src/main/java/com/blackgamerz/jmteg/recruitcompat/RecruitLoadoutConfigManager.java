@@ -1,14 +1,13 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.util.JsonConfigIO;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.fml.loading.FMLPaths;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.*;
-import java.nio.charset.StandardCharsets;
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -60,11 +59,7 @@ public final class RecruitLoadoutConfigManager {
         if (loaded) return;
         loaded = true;
         try {
-            File cfgDir  = FMLPaths.CONFIGDIR.get().toFile();
-            File modDir  = new File(cfgDir, SUBPATH);
-            if (!modDir.exists() && !modDir.mkdirs()) {
-                LOGGER.warn("RecruitLoadoutConfigManager: could not create config dir {}", modDir.getAbsolutePath());
-            }
+            File modDir  = JsonConfigIO.resolveConfigDir(SUBPATH, LOGGER);
             File cfgFile = new File(modDir, FILENAME);
             if (!cfgFile.exists()) {
                 writeDefaults(cfgFile);
@@ -159,67 +154,58 @@ public final class RecruitLoadoutConfigManager {
     // ── Read / write ──────────────────────────────────────────────────────────
 
     private static void readFile(File file) {
-        try (Reader r = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
-            JsonRoot root = GSON.fromJson(r, JsonRoot.class);
-            if (root == null) {
-                LOGGER.warn("RecruitLoadoutConfigManager: {} is empty – applying built-in defaults", file.getName());
-                applyHardcodedDefaults();
-                return;
-            }
-
-            // Parse role pools
-            if (root.roles != null) {
-                for (Map.Entry<String, JsonRoleEntry> e : root.roles.entrySet()) {
-                    RecruitGunRole role;
-                    try { role = RecruitGunRole.valueOf(e.getKey().toUpperCase(Locale.ROOT)); }
-                    catch (IllegalArgumentException ex) {
-                        LOGGER.warn("RecruitLoadoutConfigManager: unknown role '{}', skipping", e.getKey());
-                        continue;
-                    }
-                    List<ResourceLocation> guns = new ArrayList<>();
-                    for (String id : e.getValue().guns) {
-                        ResourceLocation rl = ResourceLocation.tryParse(id);
-                        if (rl != null) guns.add(rl);
-                        else LOGGER.warn("RecruitLoadoutConfigManager: invalid gun id '{}' in role {}", id, role);
-                    }
-                    ROLE_GUN_POOLS.put(role, Collections.unmodifiableList(guns));
-                }
-            }
-
-            // Parse recruit tier configs
-            if (root.recruit_tiers != null) {
-                for (Map.Entry<String, JsonTierEntry> e : root.recruit_tiers.entrySet()) {
-                    String key = e.getKey().toUpperCase(Locale.ROOT);
-                    JsonTierEntry jt = e.getValue();
-                    List<RoleWeight> rws = new ArrayList<>();
-                    for (JsonRoleWeight jrw : jt.roles) {
-                        try {
-                            RecruitGunRole gwRole = RecruitGunRole.valueOf(jrw.role.toUpperCase(Locale.ROOT));
-                            rws.add(new RoleWeight(gwRole, jrw.weight));
-                        } catch (IllegalArgumentException ex) {
-                            LOGGER.warn("RecruitLoadoutConfigManager: unknown role '{}' in tier {}", jrw.role, key);
-                        }
-                    }
-                    RECRUIT_TIER_CONFIGS.put(key, new RecruitTierConfig(rws, jt.fallback_to_any_gun));
-                }
-            }
-
-            LOGGER.info("RecruitLoadoutConfigManager: loaded {} role pools and {} recruit tier configs",
-                    ROLE_GUN_POOLS.size(), RECRUIT_TIER_CONFIGS.size());
-        } catch (IOException ex) {
-            LOGGER.error("RecruitLoadoutConfigManager: IO error reading {}", file.getAbsolutePath(), ex);
+        JsonRoot root = JsonConfigIO.readJson(GSON, file, JsonRoot.class, LOGGER);
+        if (root == null) {
+            LOGGER.warn("RecruitLoadoutConfigManager: {} is empty or unreadable – applying built-in defaults", file.getName());
             applyHardcodedDefaults();
+            return;
         }
+
+        // Parse role pools
+        if (root.roles != null) {
+            for (Map.Entry<String, JsonRoleEntry> e : root.roles.entrySet()) {
+                RecruitGunRole role;
+                try { role = RecruitGunRole.valueOf(e.getKey().toUpperCase(Locale.ROOT)); }
+                catch (IllegalArgumentException ex) {
+                    LOGGER.warn("RecruitLoadoutConfigManager: unknown role '{}', skipping", e.getKey());
+                    continue;
+                }
+                List<ResourceLocation> guns = new ArrayList<>();
+                for (String id : e.getValue().guns) {
+                    ResourceLocation rl = ResourceLocation.tryParse(id);
+                    if (rl != null) guns.add(rl);
+                    else LOGGER.warn("RecruitLoadoutConfigManager: invalid gun id '{}' in role {}", id, role);
+                }
+                ROLE_GUN_POOLS.put(role, Collections.unmodifiableList(guns));
+            }
+        }
+
+        // Parse recruit tier configs
+        if (root.recruit_tiers != null) {
+            for (Map.Entry<String, JsonTierEntry> e : root.recruit_tiers.entrySet()) {
+                String key = e.getKey().toUpperCase(Locale.ROOT);
+                JsonTierEntry jt = e.getValue();
+                List<RoleWeight> rws = new ArrayList<>();
+                for (JsonRoleWeight jrw : jt.roles) {
+                    try {
+                        RecruitGunRole gwRole = RecruitGunRole.valueOf(jrw.role.toUpperCase(Locale.ROOT));
+                        rws.add(new RoleWeight(gwRole, jrw.weight));
+                    } catch (IllegalArgumentException ex) {
+                        LOGGER.warn("RecruitLoadoutConfigManager: unknown role '{}' in tier {}", jrw.role, key);
+                    }
+                }
+                RECRUIT_TIER_CONFIGS.put(key, new RecruitTierConfig(rws, jt.fallback_to_any_gun));
+            }
+        }
+
+        LOGGER.info("RecruitLoadoutConfigManager: loaded {} role pools and {} recruit tier configs",
+                ROLE_GUN_POOLS.size(), RECRUIT_TIER_CONFIGS.size());
     }
 
     private static void writeDefaults(File file) {
         JsonRoot root = buildDefaultRoot();
-        try (Writer w = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8)) {
-            GSON.toJson(root, w);
-            LOGGER.info("RecruitLoadoutConfigManager: wrote default config to {}", file.getAbsolutePath());
-        } catch (IOException ex) {
-            LOGGER.error("RecruitLoadoutConfigManager: could not write default config", ex);
-        }
+        JsonConfigIO.writeJson(GSON, file, root, LOGGER);
+        LOGGER.info("RecruitLoadoutConfigManager: wrote default config to {}", file.getAbsolutePath());
     }
 
     private static JsonRoot buildDefaultRoot() {

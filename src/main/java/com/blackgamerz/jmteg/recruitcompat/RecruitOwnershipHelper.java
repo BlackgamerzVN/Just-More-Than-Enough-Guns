@@ -1,5 +1,6 @@
 package com.blackgamerz.jmteg.recruitcompat;
 
+import com.blackgamerz.jmteg.compat.ReflectionCache;
 import net.minecraft.world.entity.PathfinderMob;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -126,7 +127,9 @@ public final class RecruitOwnershipHelper {
                 if (result instanceof Optional<?> opt && opt.isPresent()) {
                     return true;
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("hasPlayerOwner: invoke of {} failed on {}", name, mob.getClass(), t);
+            }
         }
 
         // 2. Try getOwner() / getMaster() -> LivingEntity or Optional<LivingEntity>
@@ -137,7 +140,9 @@ public final class RecruitOwnershipHelper {
                 Object result = m.invoke(mob);
                 if (result instanceof net.minecraft.world.entity.LivingEntity) return true;
                 if (result instanceof Optional<?> opt && opt.isPresent()) return true;
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("hasPlayerOwner: invoke of {} failed on {}", name, mob.getClass(), t);
+            }
         }
 
         // 3. Try isTamed() / isHired() / hasOwner() -> boolean
@@ -147,7 +152,9 @@ public final class RecruitOwnershipHelper {
                 if (m == null) continue;
                 Object result = m.invoke(mob);
                 if (result instanceof Boolean b && b) return true;
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("hasPlayerOwner: invoke of {} failed on {}", name, mob.getClass(), t);
+            }
         }
 
         return false;
@@ -167,7 +174,9 @@ public final class RecruitOwnershipHelper {
                 if (m == null) continue;
                 Object result = m.invoke(mob);
                 if (result instanceof Boolean b && b) return true;
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("hasFactionAffiliation: invoke of {} failed on {}", name, mob.getClass(), t);
+            }
         }
 
         // 2. Class-name heuristic: VillagerRecruit sub-classes
@@ -184,22 +193,11 @@ public final class RecruitOwnershipHelper {
 
     /**
      * Attempts to find a no-arg method by name in the entity's class hierarchy.
-     * Returns {@code null} (never throws) if not found.
+     * Returns {@code null} (never throws) if not found. Delegates to the
+     * centralized, memoized {@link ReflectionCache#findMethod} instead of
+     * re-implementing the same public/declared-method hierarchy walk locally.
      */
     private static Method findMethod(Object obj, String name) {
-        try {
-            return obj.getClass().getMethod(name);
-        } catch (NoSuchMethodException ignored) {}
-        // Walk declared methods as fallback (handles package-private / protected)
-        Class<?> clazz = obj.getClass();
-        while (clazz != null && clazz != Object.class) {
-            try {
-                Method m = clazz.getDeclaredMethod(name);
-                m.setAccessible(true);
-                return m;
-            } catch (NoSuchMethodException ignored) {}
-            clazz = clazz.getSuperclass();
-        }
-        return null;
+        return ReflectionCache.findMethod(obj.getClass(), name);
     }
 }

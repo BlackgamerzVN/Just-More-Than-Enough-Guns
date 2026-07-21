@@ -5,6 +5,8 @@ import com.google.gson.JsonParser;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistries;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -14,6 +16,7 @@ import java.util.Map;
 
 public class GunDataManager {
 
+    private static final Logger LOGGER = LogManager.getLogger(GunDataManager.class);
     private static final Map<ResourceLocation, JsonObject> gunConfigCache = new HashMap<>();
 
     /**
@@ -31,7 +34,7 @@ public class GunDataManager {
             gunConfigCache.put(itemId, obj);
             return obj;
         } catch (Exception e) {
-            e.printStackTrace();
+            LOGGER.warn("Failed to load gun config for {}", itemId, e);
             return null;
         }
     }

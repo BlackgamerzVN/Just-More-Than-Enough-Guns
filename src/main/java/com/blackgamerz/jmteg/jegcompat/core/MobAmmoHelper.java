@@ -1,4 +1,4 @@
-package com.blackgamerz.jmteg.jegcompat.jegCompatCore;
+package com.blackgamerz.jmteg.jegcompat.core;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;

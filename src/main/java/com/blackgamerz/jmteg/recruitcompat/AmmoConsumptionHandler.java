@@ -10,6 +10,8 @@ import net.minecraft.world.entity.player.Player;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.reflect.Method;
+
 /**
  * Handles ammo reload from the entity's own inventory when a JEG gun runs dry.
  *
@@ -48,19 +50,24 @@ public class AmmoConsumptionHandler {
             try {
                 Object inventory = ReflectionCache.tryGetInventoryObject(pathfinderMob);
                 if (inventory != null) {
-                    int size = (int) inventory.getClass().getMethod("getContainerSize").invoke(inventory);
-                    for (int i = 0; i < size; i++) {
-                        ItemStack stack = (ItemStack) inventory.getClass()
-                                .getMethod("getItem", int.class).invoke(inventory, i);
-                        if (isValidAmmo(stack, gunStack)) {
-                            stack.shrink(1);
-                            ReflectionCache.tryWriteBackInventoryItem(inventory, i, stack);
-                            setAmmoCount(gunStack, maxAmmo);
-                            return true;
+                    Method getSize = ReflectionCache.findMethod(inventory.getClass(), ReflectionCache.METHOD_GET_CONTAINER_SIZE);
+                    Method getItem = ReflectionCache.findMethod(inventory.getClass(), ReflectionCache.METHOD_GET_ITEM, int.class);
+                    if (getSize != null && getItem != null) {
+                        int size = (int) getSize.invoke(inventory);
+                        for (int i = 0; i < size; i++) {
+                            ItemStack stack = (ItemStack) getItem.invoke(inventory, i);
+                            if (isValidAmmo(stack, gunStack)) {
+                                stack.shrink(1);
+                                ReflectionCache.tryWriteBackInventoryItem(inventory, i, stack);
+                                setAmmoCount(gunStack, maxAmmo);
+                                return true;
+                            }
                         }
                     }
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                LOGGER.debug("tryReloadFromInventory: reflective reload attempt failed for {}", mob, t);
+            }
         }
 
         // 2. Player inventory

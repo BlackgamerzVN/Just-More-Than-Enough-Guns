@@ -1,14 +1,15 @@
-package com.blackgamerz.jmteg.jegcompat.jegCompatCore;
+package com.blackgamerz.jmteg.jegcompat.core;
 
+import com.blackgamerz.jmteg.util.JsonConfigIO;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.fml.loading.FMLPaths;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
-import java.io.*;
+import java.io.File;
 import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -21,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * NOTE: Replace package name (your.package) with your actual package and adapt file layout if needed.
  */
 public final class GunConfigManager {
+    private static final Logger LOGGER = LogManager.getLogger(GunConfigManager.class);
     private static final String SUBPATH = "jmteg";
     private static final String FILE_NAME = "guns.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -48,48 +50,34 @@ public final class GunConfigManager {
         loaded = true;
 
         try {
-            File cfgDir = FMLPaths.CONFIGDIR.get().toFile();
-            File modDir = new File(cfgDir, SUBPATH);
-            if (!modDir.exists() && !modDir.mkdirs()) {
-                System.err.println("GunConfigManager: failed to create config directory " + modDir.getAbsolutePath());
-            }
+            File modDir = JsonConfigIO.resolveConfigDir(SUBPATH, LOGGER);
             File cfgFile = new File(modDir, FILE_NAME);
             if (!cfgFile.exists()) {
-                // write defaults
-                try (Writer w = new OutputStreamWriter(new FileOutputStream(cfgFile), StandardCharsets.UTF_8)) {
-                    GSON.toJson(defaultList(), w);
-                } catch (IOException ex) {
-                    ex.printStackTrace();
-                }
+                JsonConfigIO.writeJson(GSON, cfgFile, defaultList(), LOGGER);
             }
 
-            // read file
-            try (Reader r = new InputStreamReader(new FileInputStream(cfgFile), StandardCharsets.UTF_8)) {
-                Type listType = new TypeToken<List<RawEntry>>(){}.getType();
-                List<RawEntry> entries = GSON.fromJson(r, listType);
-                if (entries != null) {
-                    for (RawEntry e : entries) {
-                        ResourceLocation itemId = ResourceLocation.tryParse(e.item);
-                        ResourceLocation poolId = ResourceLocation.tryParse(e.pool);
-                        if (itemId == null || poolId == null) {
-                            System.err.println("GunConfigManager: invalid resource location in JSON entry, skipping: " + e);
-                            continue;
-                        }
-                        GunConfig.ReloadKind kind;
-                        try {
-                            kind = GunConfig.ReloadKind.valueOf(e.reloadKind.toUpperCase(Locale.ROOT));
-                        } catch (Exception ex) {
-                            kind = GunConfig.ReloadKind.PROJECTILE_OR_MAG;
-                        }
-                        GUN_CONFIGS.put(itemId, new GunConfig(itemId, e.maxAmmo, kind, poolId));
+            Type listType = new TypeToken<List<RawEntry>>(){}.getType();
+            List<RawEntry> entries = JsonConfigIO.readJson(GSON, cfgFile, listType, LOGGER);
+            if (entries != null) {
+                for (RawEntry e : entries) {
+                    ResourceLocation itemId = ResourceLocation.tryParse(e.item);
+                    ResourceLocation poolId = ResourceLocation.tryParse(e.pool);
+                    if (itemId == null || poolId == null) {
+                        LOGGER.warn("Invalid resource location in JSON entry, skipping: item={}, pool={}", e.item, e.pool);
+                        continue;
                     }
+                    GunConfig.ReloadKind kind;
+                    try {
+                        kind = GunConfig.ReloadKind.valueOf(e.reloadKind.toUpperCase(Locale.ROOT));
+                    } catch (Exception ex) {
+                        kind = GunConfig.ReloadKind.PROJECTILE_OR_MAG;
+                    }
+                    GUN_CONFIGS.put(itemId, new GunConfig(itemId, e.maxAmmo, kind, poolId));
                 }
-            } catch (IOException ex) {
-                ex.printStackTrace();
             }
         } catch (Throwable t) {
             // defensive fallback: populate a couple of defaults in-memory
-            t.printStackTrace();
+            LOGGER.error("GunConfigManager failed to load config; falling back to in-memory defaults", t);
             for (GunConfig c : fallbackDefaults()) {
                 if (c.itemId != null) GUN_CONFIGS.put(c.itemId, c);
             }

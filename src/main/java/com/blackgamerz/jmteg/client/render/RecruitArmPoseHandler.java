@@ -1,7 +1,7 @@
 package com.blackgamerz.jmteg.client.render;
 
-import com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunConfigManager;
-import com.blackgamerz.jmteg.jegcompat.jegCompatCore.GunConfig;
+import com.blackgamerz.jmteg.jegcompat.core.GunConfigManager;
+import com.blackgamerz.jmteg.jegcompat.core.GunConfig;
 import com.blackgamerz.jmteg.recruitcompat.JustEnoughGunsCompat;
 import com.blackgamerz.jmteg.jegcompat.GunDataManager;
 import net.minecraft.client.Minecraft;
